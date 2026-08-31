@@ -11,7 +11,7 @@ description: 複数画像(PNG/WebP/animated GIF)をライトテーブルで見�
 
 ```sh
 command -v moodboard >/dev/null || bun install -g github:mohhh-ok/moodboard
-pkill -f "moodboard" 2>/dev/null || true
+pkill -f "bin/moodboard" 2>/dev/null || true
 sleep 0.2
 nohup moodboard <画像パス...> >/tmp/moodboard.log 2>&1 & disown
 ```
@@ -24,7 +24,7 @@ nohup moodboard <画像パス...> >/tmp/moodboard.log 2>&1 & disown
 
 - **`open "file://...?クエリ"` 禁止**。macOS の LaunchServices がクエリを落とし空表示になる(実害あり)
 - **Playwright MCP でこのビューアを開かない**(file: ブロックあり。かつ Chrome チャネル起動で
-  ユーザーの Chrome と衝突した実害あり)。検証は下記の playwright-core 方式
+  ユーザーの Chrome と衝突した実害あり)
 - 表示した画像を勝手に `rm` しない
 
 ## UI 仕様
@@ -35,17 +35,7 @@ nohup moodboard <画像パス...> >/tmp/moodboard.log 2>&1 & disown
 - `r` = 再整列 / `b` = 背景切替(ダーク→市松→白。透過確認は市松) / slider・`+`/`-` = 基準サイズ
 - 物理 200% 以上で自動 `image-rendering: pixelated`(ドット検品用)
 
-## ビューアを変更したときの検証
-
-合成 dispatchEvent はネイティブ挙動(画像のゴーストドラッグ等)を再現できず素通りする(実害あり)。
-**実マウス入力**で検証する: playwright-core +
-`~/Library/Caches/ms-playwright/chromium-*` の headless Chromium(executablePath 指定)で
-`page.mouse.down/move/up`・`page.mouse.wheel` を使う。Playwright は file: を開けないので、
-検証時のみ `bun -e 'Bun.serve(...)'` で / を配信するローカルサーバを立てて http で開く
-(moodboard.html の `toImgSrc` が file/http 両対応)。検証が済んだら `lsof -ti:<port> | xargs kill`。
-
 ## 備考
 
-- webview-bun の WKWebView は file:// のクエリ保持・全ディレクトリの画像読み込みとも実測で確認済み
-- 窓を閉じればプロセスも終わる。残った場合は `pkill -f moodboard`
-- インストール・実装の詳細は [README](https://github.com/mohhh-ok/moodboard)
+- 窓を閉じればプロセスも終わる。残った場合は `pkill -f "bin/moodboard"`
+- ビューア本体の変更・検証手順は [README](https://github.com/mohhh-ok/moodboard)

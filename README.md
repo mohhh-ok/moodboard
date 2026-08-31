@@ -26,13 +26,14 @@ moodboard <画像パス...>
 エージェントから使う場合は、ツール呼び出しの終了と一緒に窓が死なないよう `nohup` + `disown` で起動する。
 
 ```sh
-pkill -f "moodboard" 2>/dev/null || true
+pkill -f "bin/moodboard" 2>/dev/null || true
 sleep 0.2
 nohup moodboard <画像パス...> >/tmp/moodboard.log 2>&1 & disown
 ```
 
-- 先頭の `pkill` は前の窓を掃除するため。前の窓を残して見比べたい場合は省く
-- 残った場合は `pkill -f moodboard` で終了できる
+- 先頭の `pkill` は前の窓を掃除するため。前の窓を残して見比べたい場合は省く。
+  パターンを `bin/moodboard` にしているのは、`moodboard` だけだとリポジトリを開いているエディタ等の無関係なプロセスまで巻き込むため
+- 残った場合は `pkill -f "bin/moodboard"` で終了できる
 
 ## UI 仕様
 
