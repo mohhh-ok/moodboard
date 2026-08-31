@@ -1,0 +1,18 @@
+{
+  "name": "moodboard",
+  "version": "1.0.0",
+  "description": "複数画像をライトテーブルに並べて見比べる WKWebView ビューア(bun + webview-bun)",
+  "type": "module",
+  "bin": {
+    "moodboard": "./moodboard.ts"
+  },
+  "license": "MIT",
+  "author": "MOhhh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mohhh-ok/moodboard.git"
+  },
+  "dependencies": {
+    "webview-bun": "^2.4.0"
+  }
+}

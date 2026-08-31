@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<!--
+  moodboard.html — 生成画像(PNG/WebP/animated GIF)を複数並べて確認するための
+  完全自己完結の静的ビューア(ライトテーブル方式)。ビルド不要・外部依存ゼロ・vanilla JS・1ファイル。
+
+  起動手順の正は README.md(moodboard.ts の webview-bun 窓で開く。サーバ・ブラウザ不要)。
+
+  使い方:
+    moodboard <画像パス...>
+
+  注意: `open "file://...?クエリ"` は macOS の LaunchServices がクエリを落とすため不可。
+  ブラウザで開きたい場合のみ、/ を配信するローカルサーバ経由の http で開く(toImgSrc が両対応)。
+
+  互換パラメータ:
+    ?imgs=<カンマ区切りの絶対パス> (f が1件でもあれば無視される)
+-->
+<html lang="ja" data-bg="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>moodboard</title>
+<style>
+  :root {
+    --cell: 220px;
+    --fg: #d8d8d8;
+    --fg-dim: #8a8a8a;
+    --border: #333;
+    --header-bg: #202020;
+    --page-bg: #141414;
+    --card-bg: #1c1c1c;
+    --error: #b04040;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--page-bg);
+    color: var(--fg);
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+    height: 100%;
+  }
+
+  /* ---- background cycle target (card image area / lightbox) ---- */
+  html[data-bg="dark"] body,
+  html[data-bg="dark"] #lightbox-backdrop {
+    background: #1a1a1a;
+  }
+  html[data-bg="white"] body,
+  html[data-bg="white"] #lightbox-backdrop {
+    background: #ffffff;
+  }
+  html[data-bg="checker"] body,
+  html[data-bg="checker"] #lightbox-backdrop {
+    background-color: #cccccc;
+    background-image:
+      linear-gradient(45deg, #999 25%, transparent 25%),
+      linear-gradient(-45deg, #999 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #999 75%),
+      linear-gradient(-45deg, transparent 75%, #999 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  }
+
+  /* ---------------- header ---------------- */
+  #header {
+    position: sticky;
+    top: 0;
+    z-index: 100000; /* item の zIndex は掴むたび増えるので大きく取る */
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    height: 40px;
+    padding: 0 12px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow-x: auto;
+  }
+
+  #image-count {
+    color: var(--fg-dim);
+    flex: 0 0 auto;
+  }
+
+  #grid-size-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+  }
+
+  #grid-size-control input[type="range"] {
+    width: 120px;
+  }
+
+  #grid-size-label {
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-dim);
+    width: 3.5em;
+  }
+
+  #bg-toggle {
+    flex: 0 0 auto;
+    background: #2a2a2a;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  #bg-toggle:hover { background: #333; }
+
+  #shortcuts-hint {
+    flex: 1 1 auto;
+    color: var(--fg-dim);
+    text-align: right;
+    font-size: 11px;
+  }
+
+  /* ---------------- light table(自由配置キャンバス) ---------------- */
+  /* 画像はクリッピングなし。ドラッグでどこへでも動かせ、重ねて比較できる */
+  #canvas {
+    position: relative;
+    min-height: calc(100vh - 40px);
+  }
+
+  .item {
+    position: absolute;
+    cursor: grab;
+  }
+  .item.grabbing { cursor: grabbing; }
+
+  .item img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border);
+    box-sizing: border-box;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .item:hover img { border-color: #555; }
+  .item img.pixelated { image-rendering: pixelated; }
+
+  .item-ph {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--error);
+    color: var(--error);
+    font-size: 11px;
+    padding: 8px;
+    word-break: break-all;
+    background: rgba(120, 40, 40, 0.15);
+  }
+
+  .item-label {
+    position: absolute;
+    left: 0;
+    top: 100%;
+    margin-top: 3px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--fg-dim);
+    pointer-events: none;
+  }
+
+  /* ---------------- empty state ---------------- */
+  #empty-state {
+    display: none;
+    height: 100vh;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 14px;
+    text-align: center;
+    padding: 20px;
+  }
+  #empty-state h1 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg);
+    margin: 0;
+  }
+  #empty-state pre {
+    background: #1e1e1e;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    max-width: 900px;
+    overflow-x: auto;
+    text-align: left;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #b8d8b8;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  #empty-state p {
+    color: var(--fg-dim);
+    max-width: 640px;
+    line-height: 1.6;
+  }
+
+  /* ---------------- lightbox ---------------- */
+  #lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 200000;
+  }
+  #lightbox.active { display: block; }
+
+  #lightbox-backdrop {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  #lightbox-img {
+    position: absolute;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: grab;
+    image-rendering: auto;
+  }
+  #lightbox-img.grabbing { cursor: grabbing; }
+  #lightbox-img.pixelated { image-rendering: pixelated; }
+
+  #lightbox-error {
+    display: none;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--error);
+    font-size: 13px;
+    max-width: 80vw;
+    text-align: center;
+    word-break: break-all;
+  }
+
+  #lightbox-info {
+    position: absolute;
+    left: 12px;
+    bottom: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    color: #ddd;
+    background: rgba(0, 0, 0, 0.55);
+    padding: 4px 8px;
+    border-radius: 4px;
+    pointer-events: none;
+    white-space: pre;
+  }
+
+  #lightbox-close {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    color: #ddd;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid #444;
+    border-radius: 4px;
+    width: 28px;
+    height: 28px;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  #lightbox-close:hover { background: rgba(40, 40, 40, 0.85); }
+</style>
+</head>
+<body>
+
+  <div id="header">
+    <span id="image-count">0 images</span>
+    <span id="grid-size-control">
+      <label for="grid-size-slider">size</label>
+      <input type="range" id="grid-size-slider" min="120" max="640" step="10" value="220">
+      <span id="grid-size-label">220px</span>
+    </span>
+    <button id="bg-toggle" type="button">背景: ダーク</button>
+    <span id="shortcuts-hint">
+      wheel=サイズ drag=移動 click=拡大表示 r=再整列 b=背景 +/-=基準サイズ &nbsp;|&nbsp; lightbox: 0=fit 1=100% 2=200% ←/→=前後 Esc=閉じる
+    </span>
+  </div>
+
+  <div id="canvas"></div>
+
+  <div id="empty-state">
+    <h1>moodboard — 画像が指定されていません</h1>
+    <p>
+      GET パラメータ <code>f</code>(絶対パスを encodeURIComponent、繰り返し指定可)、
+      もしくは互換の <code>imgs</code>(カンマ区切りの絶対パス)で画像を渡してください。
+    </p>
+    <pre>moodboard &lt;画像パス...&gt;
+
+注意: open "file://...?クエリ" は macOS がクエリを落とすので不可。
+手順の正は README.md</pre>
+  </div>
+
+  <div id="lightbox">
+    <div id="lightbox-backdrop">
+      <img id="lightbox-img" src="" alt="" draggable="false">
+      <div id="lightbox-error"></div>
+    </div>
+    <div id="lightbox-info"></div>
+    <button id="lightbox-close" type="button" title="閉じる (Esc)">&times;</button>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------- constants ----------------
+  var MIN_ZOOM = 0.05;
+  var MAX_ZOOM = 32;
+  var FIT_MARGIN = 40; // px margin kept around the image when fitting
+  var BG_STATES = ["dark", "checker", "white"];
+  var BG_LABELS = { dark: "ダーク", checker: "市松", white: "白" };
+
+  // ---------------- shared helpers ----------------
+  function clamp(v, lo, hi) {
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  function basename(path) {
+    var parts = path.split("/");
+    return parts[parts.length - 1] || path;
+  }
+
+  function toImgSrc(absPath) {
+    var encoded = absPath.split("/").map(encodeURIComponent).join("/");
+    // http(s) 経由(ファイルシステムルートを root にした検証用ローカルサーバ)では
+    // file:// サブリソースがブロックされるため、サーバルート相対で参照する
+    if (window.location.protocol === "file:") return "file://" + encoded;
+    return encoded;
+  }
+
+  function devicePixelRatioSafe() {
+    return window.devicePixelRatio || 1;
+  }
+
+  // ---------------- param parsing ----------------
+  function getImagePaths() {
+    var params = new URLSearchParams(window.location.search);
+    var fParams = params.getAll("f");
+    if (fParams.length > 0) {
+      return fParams;
+    }
+    var imgsParam = params.get("imgs");
+    if (imgsParam) {
+      return imgsParam.split(",").filter(function (p) { return p.length > 0; });
+    }
+    return [];
+  }
+
+  // ---------------- state ----------------
+  var imagePaths = getImagePaths();
+  var bgIndex = 0;
+
+  var lightboxState = {
+    index: 0,
+    zoom: 1,
+    posX: 0,
+    posY: 0,
+    naturalW: 0,
+    naturalH: 0,
+    dragging: false,
+    didDrag: false,
+    dragStartX: 0,
+    dragStartY: 0,
+    dragOrigX: 0,
+    dragOrigY: 0
+  };
+
+  // ---------------- DOM refs ----------------
+  var headerEl = document.getElementById("header");
+  var canvasEl = document.getElementById("canvas");
+  var emptyStateEl = document.getElementById("empty-state");
+  var imageCountEl = document.getElementById("image-count");
+  var gridSizeSlider = document.getElementById("grid-size-slider");
+  var gridSizeLabel = document.getElementById("grid-size-label");
+  var bgToggleBtn = document.getElementById("bg-toggle");
+
+  var lightboxEl = document.getElementById("lightbox");
+  var lightboxBackdrop = document.getElementById("lightbox-backdrop");
+  var lightboxImg = document.getElementById("lightbox-img");
+  var lightboxErrorEl = document.getElementById("lightbox-error");
+  var lightboxInfoEl = document.getElementById("lightbox-info");
+  var lightboxCloseBtn = document.getElementById("lightbox-close");
+
+  // ---------------- base size ----------------
+  function setBaseSize(px) {
+    var v = clamp(px, 120, 640);
+    gridSizeSlider.value = String(v);
+    gridSizeLabel.textContent = v + "px";
+  }
+
+  function adjustBaseSize(delta) {
+    setBaseSize(parseInt(gridSizeSlider.value, 10) + delta);
+    layoutItems();
+  }
+
+  gridSizeSlider.addEventListener("input", function () {
+    setBaseSize(parseInt(gridSizeSlider.value, 10));
+    layoutItems();
+  });
+
+  // ---------------- background cycle ----------------
+  function cycleBackground() {
+    bgIndex = (bgIndex + 1) % BG_STATES.length;
+    var state = BG_STATES[bgIndex];
+    document.documentElement.setAttribute("data-bg", state);
+    bgToggleBtn.textContent = "背景: " + BG_LABELS[state];
+  }
+
+  bgToggleBtn.addEventListener("click", cycleBackground);
+
+  // ---------------- light table(自由配置キャンバス) ----------------
+  // 画像はクリッピングなしでキャンバス上を自由に移動・自由なサイズにできる。
+  var MIN_ITEM_WIDTH = 40;
+  var LAYOUT_GAP = 14;
+  var LABEL_SPACE = 22;
+  var items = [];
+  var itemDrag = null;           // 進行中のドラッグ
+  var suppressItemClick = false; // ドラッグ直後の click でライトボックスを開かない
+  var zCounter = 1;
+
+  function itemHeight(item) {
+    return item.w * item.aspect;
+  }
+
+  function applyItemStyle(item) {
+    item.el.style.left = item.x + "px";
+    item.el.style.top = item.y + "px";
+    item.el.style.width = item.w + "px";
+    if (item.ph) item.ph.style.height = itemHeight(item) + "px";
+    if (item.img && item.img.naturalWidth) {
+      // ライトボックスと同じ「物理ピクセル基準 200% 以上で pixelated」
+      var physZoom = item.w * devicePixelRatioSafe() / item.img.naturalWidth;
+      item.img.classList.toggle("pixelated", physZoom >= 2);
+    }
+  }
+
+  // 初期整列。r キー・基準サイズ変更でも呼ぶ。以降の移動・リサイズは自由。
+  function layoutItems() {
+    var base = parseInt(gridSizeSlider.value, 10);
+    var maxW = Math.max(canvasEl.clientWidth, base + LAYOUT_GAP * 2);
+    var x = LAYOUT_GAP, y = LAYOUT_GAP, rowH = 0;
+    items.forEach(function (item) {
+      item.w = base;
+      var h = itemHeight(item) + LABEL_SPACE;
+      if (x + base > maxW - LAYOUT_GAP && x > LAYOUT_GAP) {
+        x = LAYOUT_GAP;
+        y += rowH + LAYOUT_GAP;
+        rowH = 0;
+      }
+      item.x = x;
+      item.y = y;
+      rowH = Math.max(rowH, h);
+      x += base + LAYOUT_GAP;
+      applyItemStyle(item);
+    });
+    canvasEl.style.minHeight = (y + rowH + LAYOUT_GAP) + "px";
+  }
+
+  function attachItemInteractions(item) {
+    item.el.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      var cRect = canvasEl.getBoundingClientRect();
+      var px = e.clientX - cRect.left;
+      var py = e.clientY - cRect.top;
+      var factor = Math.exp(-e.deltaY * 0.0015);
+      var maxW = item.img && item.img.naturalWidth
+        ? item.img.naturalWidth * MAX_ZOOM / devicePixelRatioSafe()
+        : 4096;
+      var newW = clamp(item.w * factor, MIN_ITEM_WIDTH, maxW);
+      var ratio = newW / item.w;
+      // カーソル位置を不動点にリサイズ
+      item.x = px - (px - item.x) * ratio;
+      item.y = py - (py - item.y) * ratio;
+      item.w = newW;
+      applyItemStyle(item);
+    }, { passive: false });
+
+    item.el.addEventListener("mousedown", function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      item.el.style.zIndex = String(++zCounter); // 掴んだものを最前面へ
+      itemDrag = {
+        item: item,
+        startX: e.clientX,
+        startY: e.clientY,
+        origX: item.x,
+        origY: item.y,
+        moved: false
+      };
+      item.el.classList.add("grabbing");
+    });
+
+    item.el.addEventListener("click", function () {
+      if (suppressItemClick) {
+        suppressItemClick = false;
+        return;
+      }
+      if (!item.broken) openLightbox(item.index);
+    });
+  }
+
+  // ドラッグ終了が item 外で起きても、次の押下で必ず抑制フラグを掃除する
+  document.addEventListener("mousedown", function () {
+    suppressItemClick = false;
+  }, true);
+
+  document.addEventListener("mousemove", function (e) {
+    if (!itemDrag) return;
+    var dx = e.clientX - itemDrag.startX;
+    var dy = e.clientY - itemDrag.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) itemDrag.moved = true;
+    itemDrag.item.x = itemDrag.origX + dx;
+    itemDrag.item.y = itemDrag.origY + dy;
+    applyItemStyle(itemDrag.item);
+  });
+
+  document.addEventListener("mouseup", function () {
+    if (!itemDrag) return;
+    itemDrag.item.el.classList.remove("grabbing");
+    if (itemDrag.moved) suppressItemClick = true;
+    itemDrag = null;
+  });
+
+  // ---------------- canvas rendering ----------------
+  function createItem(path, index, onSettled) {
+    var el = document.createElement("div");
+    el.className = "item";
+    el.title = path;
+
+    var img = document.createElement("img");
+    img.alt = basename(path);
+    // ネイティブの画像ドラッグ(ゴースト)を殺して移動を効かせる
+    img.draggable = false;
+    img.addEventListener("dragstart", function (e) { e.preventDefault(); });
+
+    var label = document.createElement("div");
+    label.className = "item-label";
+    label.textContent = basename(path);
+
+    var item = {
+      el: el,
+      img: img,
+      ph: null,
+      path: path,
+      index: index,
+      x: 0,
+      y: 0,
+      w: parseInt(gridSizeSlider.value, 10),
+      aspect: 1,
+      broken: false
+    };
+
+    img.addEventListener("load", function () {
+      item.aspect = img.naturalHeight / img.naturalWidth || 1;
+      label.textContent = basename(path) + "  " + img.naturalWidth + "×" + img.naturalHeight;
+      onSettled();
+    });
+
+    img.addEventListener("error", function () {
+      item.broken = true;
+      item.aspect = 0.5;
+      el.classList.add("error");
+      img.remove();
+      item.img = null;
+      var ph = document.createElement("div");
+      ph.className = "item-ph";
+      ph.textContent = "load failed: " + path;
+      item.ph = ph;
+      el.insertBefore(ph, label);
+      label.textContent = basename(path) + " (error)";
+      onSettled();
+    });
+
+    img.src = toImgSrc(path);
+
+    el.appendChild(img);
+    el.appendChild(label);
+    attachItemInteractions(item);
+    items.push(item);
+    return el;
+  }
+
+  function renderCanvas() {
+    if (imagePaths.length === 0) {
+      headerEl.style.display = "none";
+      canvasEl.style.display = "none";
+      emptyStateEl.style.display = "flex";
+      return;
+    }
+
+    imageCountEl.textContent = imagePaths.length + (imagePaths.length === 1 ? " image" : " images");
+
+    var pending = imagePaths.length;
+    function settled() {
+      pending--;
+      if (pending === 0) layoutItems();
+    }
+
+    var fragment = document.createDocumentFragment();
+    imagePaths.forEach(function (path, index) {
+      fragment.appendChild(createItem(path, index, settled));
+    });
+    canvasEl.appendChild(fragment);
+    layoutItems(); // 読み込み前の仮整列(aspect=1)。全画像 settle 後に再整列される
+  }
+
+  // ---------------- lightbox: geometry ----------------
+  function computeFitZoom(naturalW, naturalH) {
+    var dpr = devicePixelRatioSafe();
+    var vw = Math.max(1, window.innerWidth - FIT_MARGIN * 2);
+    var vh = Math.max(1, window.innerHeight - FIT_MARGIN * 2);
+    var cssScale = Math.min(vw / naturalW, vh / naturalH);
+    return cssScale * dpr;
+  }
+
+  function centerImage() {
+    var dpr = devicePixelRatioSafe();
+    var w = lightboxState.naturalW * lightboxState.zoom / dpr;
+    var h = lightboxState.naturalH * lightboxState.zoom / dpr;
+    lightboxState.posX = (window.innerWidth - w) / 2;
+    lightboxState.posY = (window.innerHeight - h) / 2;
+  }
+
+  function renderLightboxTransform() {
+    var dpr = devicePixelRatioSafe();
+    var w = lightboxState.naturalW * lightboxState.zoom / dpr;
+    var h = lightboxState.naturalH * lightboxState.zoom / dpr;
+    lightboxImg.style.width = w + "px";
+    lightboxImg.style.height = h + "px";
+    lightboxImg.style.left = lightboxState.posX + "px";
+    lightboxImg.style.top = lightboxState.posY + "px";
+    lightboxImg.classList.toggle("pixelated", lightboxState.zoom >= 2);
+    updateLightboxInfo();
+  }
+
+  function setFitZoom() {
+    if (!lightboxState.naturalW) return;
+    lightboxState.zoom = computeFitZoom(lightboxState.naturalW, lightboxState.naturalH);
+    centerImage();
+    renderLightboxTransform();
+  }
+
+  function setZoomCentered(z) {
+    if (!lightboxState.naturalW) return;
+    lightboxState.zoom = clamp(z, MIN_ZOOM, MAX_ZOOM);
+    centerImage();
+    renderLightboxTransform();
+  }
+
+  function applyZoomAtPoint(newZoomRaw, cx, cy) {
+    if (!lightboxState.naturalW) return;
+    var newZoom = clamp(newZoomRaw, MIN_ZOOM, MAX_ZOOM);
+    var dpr = devicePixelRatioSafe();
+    var oldW = lightboxState.naturalW * lightboxState.zoom / dpr;
+    var oldH = lightboxState.naturalH * lightboxState.zoom / dpr;
+    var fracX = (cx - lightboxState.posX) / oldW;
+    var fracY = (cy - lightboxState.posY) / oldH;
+    var newW = lightboxState.naturalW * newZoom / dpr;
+    var newH = lightboxState.naturalH * newZoom / dpr;
+    lightboxState.zoom = newZoom;
+    lightboxState.posX = cx - fracX * newW;
+    lightboxState.posY = cy - fracY * newH;
+    renderLightboxTransform();
+  }
+
+  function updateLightboxInfo() {
+    var path = imagePaths[lightboxState.index];
+    var dims = lightboxState.naturalW ? (lightboxState.naturalW + "×" + lightboxState.naturalH) : "…";
+    var pct = Math.round(lightboxState.zoom * 100);
+    lightboxInfoEl.textContent =
+      basename(path) + "  " + dims + "  " + pct + "%  (" + (lightboxState.index + 1) + "/" + imagePaths.length + ")";
+  }
+
+  // ---------------- lightbox: open / navigate / close ----------------
+  function loadLightboxImage() {
+    var path = imagePaths[lightboxState.index];
+    lightboxState.naturalW = 0;
+    lightboxState.naturalH = 0;
+    lightboxErrorEl.style.display = "none";
+    lightboxImg.style.display = "";
+    lightboxImg.onload = function () {
+      lightboxState.naturalW = lightboxImg.naturalWidth;
+      lightboxState.naturalH = lightboxImg.naturalHeight;
+      setFitZoom();
+    };
+    lightboxImg.onerror = function () {
+      lightboxImg.style.display = "none";
+      lightboxErrorEl.textContent = "load failed: " + path;
+      lightboxErrorEl.style.display = "block";
+    };
+    lightboxImg.src = toImgSrc(path);
+    updateLightboxInfo();
+  }
+
+  function openLightbox(index) {
+    lightboxState.index = index;
+    lightboxEl.classList.add("active");
+    loadLightboxImage();
+  }
+
+  function closeLightbox() {
+    lightboxEl.classList.remove("active");
+    lightboxImg.src = "";
+  }
+
+  function navigateLightbox(delta) {
+    var n = imagePaths.length;
+    if (n <= 1) return;
+    lightboxState.index = (lightboxState.index + delta + n) % n;
+    loadLightboxImage();
+  }
+
+  // ---------------- lightbox: mouse interaction ----------------
+  lightboxImg.addEventListener("dragstart", function (e) { e.preventDefault(); });
+
+  lightboxImg.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    lightboxState.dragging = true;
+    lightboxState.didDrag = false;
+    lightboxState.dragStartX = e.clientX;
+    lightboxState.dragStartY = e.clientY;
+    lightboxState.dragOrigX = lightboxState.posX;
+    lightboxState.dragOrigY = lightboxState.posY;
+    lightboxImg.classList.add("grabbing");
+  });
+
+  document.addEventListener("mousemove", function (e) {
+    if (!lightboxState.dragging) return;
+    var dx = e.clientX - lightboxState.dragStartX;
+    var dy = e.clientY - lightboxState.dragStartY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) lightboxState.didDrag = true;
+    lightboxState.posX = lightboxState.dragOrigX + dx;
+    lightboxState.posY = lightboxState.dragOrigY + dy;
+    renderLightboxTransform();
+  });
+
+  document.addEventListener("mouseup", function () {
+    if (lightboxState.dragging) {
+      lightboxState.dragging = false;
+      lightboxImg.classList.remove("grabbing");
+    }
+  });
+
+  lightboxBackdrop.addEventListener("click", function (e) {
+    if (e.target !== lightboxBackdrop) return;
+    if (lightboxState.didDrag) {
+      lightboxState.didDrag = false;
+      return;
+    }
+    closeLightbox();
+  });
+
+  lightboxEl.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    var factor = Math.exp(-e.deltaY * 0.0015);
+    applyZoomAtPoint(lightboxState.zoom * factor, e.clientX, e.clientY);
+  }, { passive: false });
+
+  lightboxCloseBtn.addEventListener("click", closeLightbox);
+
+  // ---------------- keyboard shortcuts ----------------
+  function onKeyDown(e) {
+    if (document.activeElement && document.activeElement.tagName === "INPUT") return;
+
+    if (lightboxEl.classList.contains("active")) {
+      switch (e.key) {
+        case "Escape": closeLightbox(); break;
+        case "0": setFitZoom(); break;
+        case "1": setZoomCentered(1); break;
+        case "2": setZoomCentered(2); break;
+        case "ArrowLeft": navigateLightbox(-1); break;
+        case "ArrowRight": navigateLightbox(1); break;
+        case "b": cycleBackground(); break;
+        default: return;
+      }
+      e.preventDefault();
+    } else {
+      switch (e.key) {
+        case "b": cycleBackground(); break;
+        case "+": case "=": adjustBaseSize(20); break;
+        case "-": case "_": adjustBaseSize(-20); break;
+        case "r": layoutItems(); break;
+        default: return;
+      }
+      e.preventDefault();
+    }
+  }
+
+  document.addEventListener("keydown", onKeyDown);
+
+  // ---------------- init ----------------
+  function init() {
+    setBaseSize(parseInt(gridSizeSlider.value, 10));
+    renderCanvas();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
