@@ -1,6 +1,6 @@
 # moodboard
 
-A single-command image viewer that lays out multiple images (PNG / WebP / animated GIF) on a light table so you can compare them side by side.
+A single-command image/video viewer that lays out multiple images (PNG / WebP / animated GIF) or videos (mov / webm / mp4, matched by extension) on a light table so you can compare them side by side.
 Runs in a WKWebView window via bun + [webview-bun](https://github.com/tr1ckydev/webview-bun). No server, no browser.
 
 Built primarily for coding agents (Claude Code etc.) to show generated images or comparison candidates to the user.
@@ -43,6 +43,7 @@ nohup moodboard <image paths...> >/tmp/moodboard.log 2>&1 & disown
   - inside the lightbox: `0` = fit, `1` = physical 1:1, `2` = 200%, `←/→` = previous/next, `Esc` = close
 - `r` = re-align / `b` = cycle background (dark → checkerboard → white; use checkerboard to check transparency) / slider, `+`/`-` = base size
 - At 200% physical scale or larger, `image-rendering: pixelated` is applied automatically (for pixel-level inspection)
+- Videos (mov/webm/mp4) play autoplay/muted/looped in place and support the same wheel/drag/lightbox controls as images. HEVC alpha `.mov` plays in WKWebView; VP9 alpha `.webm` may not — a failed item shows "再生不可" plus the filename instead of crashing
 
 ## Never do this
 

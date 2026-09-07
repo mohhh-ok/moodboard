@@ -1,12 +1,16 @@
 <!DOCTYPE html>
 <!--
-  moodboard.html — 生成画像(PNG/WebP/animated GIF)を複数並べて確認するための
+  moodboard.html — 生成画像(PNG/WebP/animated GIF)・動画(mov/webm/mp4)を複数並べて確認するための
   完全自己完結の静的ビューア(ライトテーブル方式)。ビルド不要・外部依存ゼロ・vanilla JS・1ファイル。
+
+  動画は拡張子(mov/webm/mp4・大小無視)で自動判定し、<video autoplay muted loop playsinline> で
+  描画する。透過 alpha 付き待機ループ動画の見比べにも使う想定(背景切替=市松で透過確認)。
+  webm(VP9 alpha)は WKWebView で再生できないことがあり、その場合は再生不可の表示にフォールバックする。
 
   起動手順の正は README.md(moodboard.ts の webview-bun 窓で開く。サーバ・ブラウザ不要)。
 
   使い方:
-    moodboard <画像パス...>
+    moodboard <画像/動画パス...>
 
   注意: `open "file://...?クエリ"` は macOS の LaunchServices がクエリを落とすため不可。
   ブラウザで開きたい場合のみ、/ を配信するローカルサーバ経由の http で開く(toImgSrc が両対応)。
@@ -135,7 +139,8 @@
   }
   .item.grabbing { cursor: grabbing; }
 
-  .item img {
+  .item img,
+  .item video {
     display: block;
     width: 100%;
     height: auto;
@@ -144,8 +149,10 @@
     user-select: none;
     -webkit-user-select: none;
   }
-  .item:hover img { border-color: #555; }
-  .item img.pixelated { image-rendering: pixelated; }
+  .item:hover img,
+  .item:hover video { border-color: #555; }
+  .item img.pixelated,
+  .item video.pixelated { image-rendering: pixelated; }
 
   .item-ph {
     width: 100%;
@@ -223,15 +230,18 @@
     overflow: hidden;
   }
 
-  #lightbox-img {
+  #lightbox-img,
+  #lightbox-video {
     position: absolute;
     user-select: none;
     -webkit-user-select: none;
     cursor: grab;
     image-rendering: auto;
   }
-  #lightbox-img.grabbing { cursor: grabbing; }
-  #lightbox-img.pixelated { image-rendering: pixelated; }
+  #lightbox-img.grabbing,
+  #lightbox-video.grabbing { cursor: grabbing; }
+  #lightbox-img.pixelated,
+  #lightbox-video.pixelated { image-rendering: pixelated; }
 
   #lightbox-error {
     display: none;
@@ -295,12 +305,12 @@
   <div id="canvas"></div>
 
   <div id="empty-state">
-    <h1>moodboard — 画像が指定されていません</h1>
+    <h1>moodboard — 画像/動画が指定されていません</h1>
     <p>
       GET パラメータ <code>f</code>(絶対パスを encodeURIComponent、繰り返し指定可)、
-      もしくは互換の <code>imgs</code>(カンマ区切りの絶対パス)で画像を渡してください。
+      もしくは互換の <code>imgs</code>(カンマ区切りの絶対パス)で画像/動画(mov/webm/mp4)を渡してください。
     </p>
-    <pre>moodboard &lt;画像パス...&gt;
+    <pre>moodboard &lt;画像/動画パス...&gt;
 
 注意: open "file://...?クエリ" は macOS がクエリを落とすので不可。
 手順の正は README.md</pre>
@@ -309,6 +319,7 @@
   <div id="lightbox">
     <div id="lightbox-backdrop">
       <img id="lightbox-img" src="" alt="" draggable="false">
+      <video id="lightbox-video" muted loop playsinline></video>
       <div id="lightbox-error"></div>
     </div>
     <div id="lightbox-info"></div>
@@ -348,6 +359,21 @@
     return window.devicePixelRatio || 1;
   }
 
+  function isVideoPath(path) {
+    return /\.(mov|webm|mp4)$/i.test(path);
+  }
+
+  // <img> の naturalWidth/naturalHeight と <video> の videoWidth/videoHeight を吸収する
+  function mediaWidth(media) {
+    if (!media) return 0;
+    return media.tagName === "VIDEO" ? media.videoWidth : media.naturalWidth;
+  }
+
+  function mediaHeight(media) {
+    if (!media) return 0;
+    return media.tagName === "VIDEO" ? media.videoHeight : media.naturalHeight;
+  }
+
   // ---------------- param parsing ----------------
   function getImagePaths() {
     var params = new URLSearchParams(window.location.search);
@@ -368,6 +394,7 @@
 
   var lightboxState = {
     index: 0,
+    isVideo: false,
     zoom: 1,
     posX: 0,
     posY: 0,
@@ -393,6 +420,7 @@
   var lightboxEl = document.getElementById("lightbox");
   var lightboxBackdrop = document.getElementById("lightbox-backdrop");
   var lightboxImg = document.getElementById("lightbox-img");
+  var lightboxVideo = document.getElementById("lightbox-video");
   var lightboxErrorEl = document.getElementById("lightbox-error");
   var lightboxInfoEl = document.getElementById("lightbox-info");
   var lightboxCloseBtn = document.getElementById("lightbox-close");
@@ -443,10 +471,13 @@
     item.el.style.top = item.y + "px";
     item.el.style.width = item.w + "px";
     if (item.ph) item.ph.style.height = itemHeight(item) + "px";
-    if (item.img && item.img.naturalWidth) {
-      // ライトボックスと同じ「物理ピクセル基準 200% 以上で pixelated」
-      var physZoom = item.w * devicePixelRatioSafe() / item.img.naturalWidth;
-      item.img.classList.toggle("pixelated", physZoom >= 2);
+    if (item.media) {
+      var mw = mediaWidth(item.media);
+      if (mw) {
+        // ライトボックスと同じ「物理ピクセル基準 200% 以上で pixelated」
+        var physZoom = item.w * devicePixelRatioSafe() / mw;
+        item.media.classList.toggle("pixelated", physZoom >= 2);
+      }
     }
   }
 
@@ -479,8 +510,9 @@
       var px = e.clientX - cRect.left;
       var py = e.clientY - cRect.top;
       var factor = Math.exp(-e.deltaY * 0.0015);
-      var maxW = item.img && item.img.naturalWidth
-        ? item.img.naturalWidth * MAX_ZOOM / devicePixelRatioSafe()
+      var mw = mediaWidth(item.media);
+      var maxW = mw
+        ? mw * MAX_ZOOM / devicePixelRatioSafe()
         : 4096;
       var newW = clamp(item.w * factor, MIN_ITEM_WIDTH, maxW);
       var ratio = newW / item.w;
@@ -543,11 +575,20 @@
     el.className = "item";
     el.title = path;
 
-    var img = document.createElement("img");
-    img.alt = basename(path);
-    // ネイティブの画像ドラッグ(ゴースト)を殺して移動を効かせる
-    img.draggable = false;
-    img.addEventListener("dragstart", function (e) { e.preventDefault(); });
+    var isVideo = isVideoPath(path);
+    var media = document.createElement(isVideo ? "video" : "img");
+    if (isVideo) {
+      media.autoplay = true;
+      media.muted = true;
+      media.loop = true;
+      media.playsInline = true;
+      media.disablePictureInPicture = true;
+    } else {
+      media.alt = basename(path);
+    }
+    // ネイティブのドラッグ(ゴースト)を殺して移動を効かせる
+    media.draggable = false;
+    media.addEventListener("dragstart", function (e) { e.preventDefault(); });
 
     var label = document.createElement("div");
     label.className = "item-label";
@@ -555,7 +596,8 @@
 
     var item = {
       el: el,
-      img: img,
+      media: media,
+      isVideo: isVideo,
       ph: null,
       path: path,
       index: index,
@@ -566,30 +608,32 @@
       broken: false
     };
 
-    img.addEventListener("load", function () {
-      item.aspect = img.naturalHeight / img.naturalWidth || 1;
-      label.textContent = basename(path) + "  " + img.naturalWidth + "×" + img.naturalHeight;
+    media.addEventListener(isVideo ? "loadedmetadata" : "load", function () {
+      var w = mediaWidth(media);
+      var h = mediaHeight(media);
+      item.aspect = (w ? h / w : 0) || 1;
+      label.textContent = basename(path) + "  " + w + "×" + h;
       onSettled();
     });
 
-    img.addEventListener("error", function () {
+    media.addEventListener("error", function () {
       item.broken = true;
       item.aspect = 0.5;
       el.classList.add("error");
-      img.remove();
-      item.img = null;
+      media.remove();
+      item.media = null;
       var ph = document.createElement("div");
       ph.className = "item-ph";
-      ph.textContent = "load failed: " + path;
+      ph.textContent = isVideo ? "再生不可: " + basename(path) : "load failed: " + path;
       item.ph = ph;
       el.insertBefore(ph, label);
       label.textContent = basename(path) + " (error)";
       onSettled();
     });
 
-    img.src = toImgSrc(path);
+    media.src = toImgSrc(path);
 
-    el.appendChild(img);
+    el.appendChild(media);
     el.appendChild(label);
     attachItemInteractions(item);
     items.push(item);
@@ -637,15 +681,21 @@
     lightboxState.posY = (window.innerHeight - h) / 2;
   }
 
+  // 現在表示中(image/video のどちらか)のライトボックス要素
+  function activeLightboxMedia() {
+    return lightboxState.isVideo ? lightboxVideo : lightboxImg;
+  }
+
   function renderLightboxTransform() {
     var dpr = devicePixelRatioSafe();
     var w = lightboxState.naturalW * lightboxState.zoom / dpr;
     var h = lightboxState.naturalH * lightboxState.zoom / dpr;
-    lightboxImg.style.width = w + "px";
-    lightboxImg.style.height = h + "px";
-    lightboxImg.style.left = lightboxState.posX + "px";
-    lightboxImg.style.top = lightboxState.posY + "px";
-    lightboxImg.classList.toggle("pixelated", lightboxState.zoom >= 2);
+    var media = activeLightboxMedia();
+    media.style.width = w + "px";
+    media.style.height = h + "px";
+    media.style.left = lightboxState.posX + "px";
+    media.style.top = lightboxState.posY + "px";
+    media.classList.toggle("pixelated", lightboxState.zoom >= 2);
     updateLightboxInfo();
   }
 
@@ -690,21 +740,54 @@
   // ---------------- lightbox: open / navigate / close ----------------
   function loadLightboxImage() {
     var path = imagePaths[lightboxState.index];
+    var isVideo = isVideoPath(path);
+    lightboxState.isVideo = isVideo;
     lightboxState.naturalW = 0;
     lightboxState.naturalH = 0;
     lightboxErrorEl.style.display = "none";
-    lightboxImg.style.display = "";
-    lightboxImg.onload = function () {
-      lightboxState.naturalW = lightboxImg.naturalWidth;
-      lightboxState.naturalH = lightboxImg.naturalHeight;
-      setFitZoom();
-    };
-    lightboxImg.onerror = function () {
+
+    // 前回表示分を止めて破棄(image/video どちらの残骸も引きずらない)
+    lightboxImg.onload = null;
+    lightboxImg.onerror = null;
+    lightboxImg.src = "";
+    lightboxVideo.onloadedmetadata = null;
+    lightboxVideo.onerror = null;
+    lightboxVideo.pause();
+    lightboxVideo.removeAttribute("src");
+    lightboxVideo.load();
+
+    if (isVideo) {
       lightboxImg.style.display = "none";
-      lightboxErrorEl.textContent = "load failed: " + path;
-      lightboxErrorEl.style.display = "block";
-    };
-    lightboxImg.src = toImgSrc(path);
+      lightboxVideo.style.display = "";
+      lightboxVideo.onloadedmetadata = function () {
+        lightboxState.naturalW = lightboxVideo.videoWidth;
+        lightboxState.naturalH = lightboxVideo.videoHeight;
+        setFitZoom();
+      };
+      lightboxVideo.onerror = function () {
+        lightboxVideo.style.display = "none";
+        lightboxErrorEl.textContent = "再生不可: " + basename(path);
+        lightboxErrorEl.style.display = "block";
+      };
+      lightboxVideo.src = toImgSrc(path);
+      // muted なので通常はブロックされないが、念のため失敗は静かに無視する
+      var playPromise = lightboxVideo.play();
+      if (playPromise && playPromise.catch) playPromise.catch(function () {});
+    } else {
+      lightboxVideo.style.display = "none";
+      lightboxImg.style.display = "";
+      lightboxImg.onload = function () {
+        lightboxState.naturalW = lightboxImg.naturalWidth;
+        lightboxState.naturalH = lightboxImg.naturalHeight;
+        setFitZoom();
+      };
+      lightboxImg.onerror = function () {
+        lightboxImg.style.display = "none";
+        lightboxErrorEl.textContent = "load failed: " + path;
+        lightboxErrorEl.style.display = "block";
+      };
+      lightboxImg.src = toImgSrc(path);
+    }
     updateLightboxInfo();
   }
 
@@ -717,6 +800,9 @@
   function closeLightbox() {
     lightboxEl.classList.remove("active");
     lightboxImg.src = "";
+    lightboxVideo.pause();
+    lightboxVideo.removeAttribute("src");
+    lightboxVideo.load();
   }
 
   function navigateLightbox(delta) {
@@ -727,9 +813,9 @@
   }
 
   // ---------------- lightbox: mouse interaction ----------------
-  lightboxImg.addEventListener("dragstart", function (e) { e.preventDefault(); });
-
-  lightboxImg.addEventListener("mousedown", function (e) {
+  // image/video どちらが表示中でも同じ操作(pan/zoom)が効くよう、両要素に同じハンドラを付ける
+  // (非表示側は display:none でヒットテストされないため、実際に発火するのは表示中の要素だけ)
+  function onLightboxMediaMouseDown(e) {
     e.preventDefault();
     lightboxState.dragging = true;
     lightboxState.didDrag = false;
@@ -737,8 +823,13 @@
     lightboxState.dragStartY = e.clientY;
     lightboxState.dragOrigX = lightboxState.posX;
     lightboxState.dragOrigY = lightboxState.posY;
-    lightboxImg.classList.add("grabbing");
-  });
+    activeLightboxMedia().classList.add("grabbing");
+  }
+
+  lightboxImg.addEventListener("dragstart", function (e) { e.preventDefault(); });
+  lightboxVideo.addEventListener("dragstart", function (e) { e.preventDefault(); });
+  lightboxImg.addEventListener("mousedown", onLightboxMediaMouseDown);
+  lightboxVideo.addEventListener("mousedown", onLightboxMediaMouseDown);
 
   document.addEventListener("mousemove", function (e) {
     if (!lightboxState.dragging) return;
@@ -753,7 +844,7 @@
   document.addEventListener("mouseup", function () {
     if (lightboxState.dragging) {
       lightboxState.dragging = false;
-      lightboxImg.classList.remove("grabbing");
+      activeLightboxMedia().classList.remove("grabbing");
     }
   });
 
