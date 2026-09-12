@@ -40,10 +40,10 @@ nohup moodboard <image paths...> >/tmp/moodboard.log 2>&1 & disown
 - **wheel** = resize the image itself, keeping the point under the cursor fixed (up = zoom in, same direction as Google Maps; pinch supported)
 - **drag** = free movement (no clipping; images may overlap for comparison; the grabbed image comes to the front)
 - **click** (a plain click without dragging) = lightbox
-  - inside the lightbox: `0` = fit, `1` = physical 1:1, `2` = 200%, `←/→` = previous/next, `Esc` = close
+  - inside the lightbox: `0` = fit, `1` = physical 1:1, `2` = 200%, `←/→` = previous/next, `m` = toggle sound, `Esc` = close
 - `r` = re-align / `b` = cycle background (dark → checkerboard → white; use checkerboard to check transparency) / slider, `+`/`-` = base size
 - At 200% physical scale or larger, `image-rendering: pixelated` is applied automatically (for pixel-level inspection)
-- Videos (mov/webm/mp4) play autoplay/muted/looped in place and support the same wheel/drag/lightbox controls as images. HEVC alpha `.mov` plays in WKWebView; VP9 alpha `.webm` may not — a failed item shows "再生不可" plus the filename instead of crashing
+- Videos (mov/webm/mp4) play autoplay/muted/looped in place and support the same wheel/drag/lightbox controls as images. The light table is always muted (several videos playing sound at once is noise); sound plays one video at a time in the lightbox, on by default, `m` toggles mute. HEVC alpha `.mov` plays in WKWebView; VP9 alpha `.webm` may not — a failed item shows "再生不可" plus the filename instead of crashing
 
 ## Never do this
 

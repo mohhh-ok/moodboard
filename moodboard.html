@@ -4,7 +4,8 @@
   完全自己完結の静的ビューア(ライトテーブル方式)。ビルド不要・外部依存ゼロ・vanilla JS・1ファイル。
 
   動画は拡張子(mov/webm/mp4・大小無視)で自動判定し、<video autoplay muted loop playsinline> で
-  描画する。透過 alpha 付き待機ループ動画の見比べにも使う想定(背景切替=市松で透過確認)。
+  描画する。ライトテーブル上は全部ミュート(複数が同時に鳴るとうるさい)。音はライトボックスで
+  1 本ずつ出す(既定で音あり・m でミュート切替)。透過 alpha 付き待機ループ動画の見比べにも使う想定(背景切替=市松で透過確認)。
   webm(VP9 alpha)は WKWebView で再生できないことがあり、その場合は再生不可の表示にフォールバックする。
 
   起動手順の正は README.md(moodboard.ts の webview-bun 窓で開く。サーバ・ブラウザ不要)。
@@ -298,7 +299,7 @@
     </span>
     <button id="bg-toggle" type="button">背景: ダーク</button>
     <span id="shortcuts-hint">
-      wheel=サイズ drag=移動 click=拡大表示 r=再整列 b=背景 +/-=基準サイズ &nbsp;|&nbsp; lightbox: 0=fit 1=100% 2=200% ←/→=前後 Esc=閉じる
+      wheel=サイズ drag=移動 click=拡大表示 r=再整列 b=背景 +/-=基準サイズ &nbsp;|&nbsp; lightbox: 0=fit 1=100% 2=200% ←/→=前後 m=音 Esc=閉じる
     </span>
   </div>
 
@@ -319,7 +320,7 @@
   <div id="lightbox">
     <div id="lightbox-backdrop">
       <img id="lightbox-img" src="" alt="" draggable="false">
-      <video id="lightbox-video" muted loop playsinline></video>
+      <video id="lightbox-video" loop playsinline></video>
       <div id="lightbox-error"></div>
     </div>
     <div id="lightbox-info"></div>
@@ -395,6 +396,7 @@
   var lightboxState = {
     index: 0,
     isVideo: false,
+    soundOn: true,   // ライトボックスの動画は既定で音あり(m で切替)。ライトテーブルは常にミュート
     zoom: 1,
     posX: 0,
     posY: 0,
@@ -733,8 +735,16 @@
     var path = imagePaths[lightboxState.index];
     var dims = lightboxState.naturalW ? (lightboxState.naturalW + "×" + lightboxState.naturalH) : "…";
     var pct = Math.round(lightboxState.zoom * 100);
+    var sound = lightboxState.isVideo ? (lightboxState.soundOn ? "  🔊" : "  🔇") : "";
     lightboxInfoEl.textContent =
-      basename(path) + "  " + dims + "  " + pct + "%  (" + (lightboxState.index + 1) + "/" + imagePaths.length + ")";
+      basename(path) + "  " + dims + "  " + pct + "%  (" + (lightboxState.index + 1) + "/" + imagePaths.length + ")" + sound;
+  }
+
+  function toggleLightboxSound() {
+    if (!lightboxState.isVideo) return;
+    lightboxState.soundOn = !lightboxState.soundOn;
+    lightboxVideo.muted = !lightboxState.soundOn;
+    updateLightboxInfo();
   }
 
   // ---------------- lightbox: open / navigate / close ----------------
@@ -770,9 +780,21 @@
         lightboxErrorEl.style.display = "block";
       };
       lightboxVideo.src = toImgSrc(path);
-      // muted なので通常はブロックされないが、念のため失敗は静かに無視する
+      // ライトテーブル上の動画は全部ミュート(複数同時に鳴るとうるさい)。音はライトボックスで
+      // 1 本ずつ出す。ライトボックスはクリック(ユーザー操作)で開くので音あり再生が許可される。
+      // m でミュート切替(lightboxState.soundOn は次の動画にも引き継ぐ)
+      lightboxVideo.muted = !lightboxState.soundOn;
       var playPromise = lightboxVideo.play();
-      if (playPromise && playPromise.catch) playPromise.catch(function () {});
+      if (playPromise && playPromise.catch) {
+        playPromise.catch(function () {
+          // 音あり再生がブロックされたらミュートに落として再生だけは続ける
+          lightboxVideo.muted = true;
+          lightboxState.soundOn = false;
+          updateLightboxInfo();
+          var p2 = lightboxVideo.play();
+          if (p2 && p2.catch) p2.catch(function () {});
+        });
+      }
     } else {
       lightboxVideo.style.display = "none";
       lightboxImg.style.display = "";
@@ -878,6 +900,7 @@
         case "ArrowLeft": navigateLightbox(-1); break;
         case "ArrowRight": navigateLightbox(1); break;
         case "b": cycleBackground(); break;
+        case "m": toggleLightboxSound(); break;
         default: return;
       }
       e.preventDefault();
