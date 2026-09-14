@@ -35,6 +35,14 @@ nohup moodboard <image paths...> >/tmp/moodboard.log 2>&1 & disown
   The pattern is `bin/moodboard` rather than `moodboard` so it does not kill unrelated processes such as an editor that has this repository open
 - A leftover window can be closed with `pkill -f "bin/moodboard"`
 
+The launch shell returning successfully only proves that it accepted the background command. Some agent runners can still lose the detached child immediately afterwards, with an empty log. Before reporting that the window is open, verify the live process and the expected image path:
+
+```sh
+pgrep -fl "bin/moodboard"
+```
+
+No matching process means the window is not open. A process-list permission error is also not evidence of success; retry the check with the required permission. If the detached process disappears, run `moodboard <image paths...>` in a long-lived foreground tool session and keep that session alive. Report success only after the process check shows the expected image path.
+
 ## UI
 
 - **wheel** = resize the image itself, keeping the point under the cursor fixed (up = zoom in, same direction as Google Maps; pinch supported)
