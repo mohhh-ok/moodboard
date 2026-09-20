@@ -108,7 +108,8 @@
     width: 3.5em;
   }
 
-  #bg-toggle {
+  #bg-toggle,
+  .hdr-btn {
     flex: 0 0 auto;
     background: #2a2a2a;
     color: var(--fg);
@@ -118,14 +119,30 @@
     font: inherit;
     cursor: pointer;
   }
-  #bg-toggle:hover { background: #333; }
+  #bg-toggle:hover,
+  .hdr-btn:hover { background: #333; }
+  .hdr-btn[disabled] { opacity: 0.4; cursor: default; }
+  .hdr-btn[disabled]:hover { background: #2a2a2a; }
+  #select-toggle.active {
+    background: #3a5a8a;
+    border-color: #4a6a9a;
+  }
+  #select-toggle.active:hover { background: #4a6a9a; }
+  .select-only { display: none; }
+  body.selecting .select-only { display: inline-flex; align-items: center; }
 
   #shortcuts-hint {
     flex: 1 1 auto;
+    min-width: 0;
     color: var(--fg-dim);
     text-align: right;
     font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
+  body.selecting #shortcuts-hint .hint-default { display: none; }
+  #shortcuts-hint .hint-select { display: none; }
+  body.selecting #shortcuts-hint .hint-select { display: inline; }
 
   /* ---------------- light table(自由配置キャンバス) ---------------- */
   /* 画像はクリッピングなし。ドラッグでどこへでも動かせ、重ねて比較できる */
@@ -139,6 +156,41 @@
     cursor: grab;
   }
   .item.grabbing { cursor: grabbing; }
+  body.selecting .item { cursor: pointer; }
+
+  /* ---- selection checkbox ---- */
+  .item-check {
+    display: none;
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 22px;
+    height: 22px;
+    border: 2px solid #fff;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.55);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+    z-index: 2;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    color: transparent;
+    line-height: 1;
+    user-select: none;
+    -webkit-user-select: none;
+    pointer-events: none; /* クリックは item 側で受ける(伝播回避) */
+  }
+  body.selecting .item-check { display: flex; }
+  .item.selected .item-check {
+    background: #3a7ad4;
+    border-color: #6ea3ea;
+    color: #fff;
+  }
+  .item.selected img,
+  .item.selected video {
+    outline: 2px solid #6ea3ea;
+    outline-offset: -1px;
+  }
 
   .item img,
   .item video {
@@ -298,8 +350,14 @@
       <span id="grid-size-label">220px</span>
     </span>
     <button id="bg-toggle" type="button">背景: ダーク</button>
+    <button id="select-toggle" class="hdr-btn" type="button">選択</button>
+    <button id="select-all" class="hdr-btn select-only" type="button">全選択</button>
+    <button id="select-clear" class="hdr-btn select-only" type="button">解除</button>
+    <button id="copy-selected" class="hdr-btn select-only" type="button" disabled>コピー (0)</button>
+    <span id="copy-status" class="select-only" style="color: var(--fg-dim); font-size: 11px;"></span>
     <span id="shortcuts-hint">
-      wheel=サイズ drag=移動 click=拡大表示 r=再整列 b=背景 +/-=基準サイズ &nbsp;|&nbsp; lightbox: 0=fit 1=100% 2=200% ←/→=前後 m=音 Esc=閉じる
+      <span class="hint-default">wheel=サイズ drag=移動 click=拡大表示 r=再整列 b=背景 s=選択 +/-=基準サイズ &nbsp;|&nbsp; lightbox: 0=fit 1=100% 2=200% ←/→=前後 m=音 Esc=閉じる</span>
+      <span class="hint-select">クリック=選択 &nbsp;⌘A=全選択 &nbsp;⌘C=コピー &nbsp;s か Esc=抜ける</span>
     </span>
   </div>
 
@@ -418,6 +476,11 @@
   var gridSizeSlider = document.getElementById("grid-size-slider");
   var gridSizeLabel = document.getElementById("grid-size-label");
   var bgToggleBtn = document.getElementById("bg-toggle");
+  var selectToggleBtn = document.getElementById("select-toggle");
+  var selectAllBtn = document.getElementById("select-all");
+  var selectClearBtn = document.getElementById("select-clear");
+  var copySelectedBtn = document.getElementById("copy-selected");
+  var copyStatusEl = document.getElementById("copy-status");
 
   var lightboxEl = document.getElementById("lightbox");
   var lightboxBackdrop = document.getElementById("lightbox-backdrop");
@@ -463,6 +526,100 @@
   var itemDrag = null;           // 進行中のドラッグ
   var suppressItemClick = false; // ドラッグ直後の click でライトボックスを開かない
   var zCounter = 1;
+
+  // ---------------- selection ----------------
+  var selectMode = false;
+  var selected = new Set(); // item.index の集合
+  var copyStatusTimer = null;
+
+  function setSelectMode(on) {
+    selectMode = !!on;
+    document.body.classList.toggle("selecting", selectMode);
+    selectToggleBtn.classList.toggle("active", selectMode);
+    selectToggleBtn.textContent = selectMode ? "選択中" : "選択";
+    if (!selectMode) {
+      selected.clear();
+      items.forEach(function (it) { it.el.classList.remove("selected"); });
+    }
+    updateCopyButton();
+  }
+
+  function toggleItemSelected(item) {
+    if (selected.has(item.index)) {
+      selected.delete(item.index);
+      item.el.classList.remove("selected");
+    } else {
+      selected.add(item.index);
+      item.el.classList.add("selected");
+    }
+    updateCopyButton();
+  }
+
+  function selectAll() {
+    items.forEach(function (it) {
+      selected.add(it.index);
+      it.el.classList.add("selected");
+    });
+    updateCopyButton();
+  }
+
+  function selectClear() {
+    selected.clear();
+    items.forEach(function (it) { it.el.classList.remove("selected"); });
+    updateCopyButton();
+  }
+
+  function updateCopyButton() {
+    var n = selected.size;
+    copySelectedBtn.textContent = "コピー (" + n + ")";
+    copySelectedBtn.disabled = n === 0;
+  }
+
+  function flashCopyStatus(msg) {
+    copyStatusEl.textContent = msg;
+    if (copyStatusTimer) clearTimeout(copyStatusTimer);
+    copyStatusTimer = setTimeout(function () {
+      copyStatusEl.textContent = "";
+      copyStatusTimer = null;
+    }, 1800);
+  }
+
+  function copySelectedPaths() {
+    if (selected.size === 0) return;
+    // 表示順(imagePaths の元順)で並べる
+    var paths = [];
+    imagePaths.forEach(function (p, i) {
+      if (selected.has(i)) paths.push(p);
+    });
+    var text = paths.join("\n");
+    var done = function () { flashCopyStatus(paths.length + " 件コピー"); };
+    var fail = function () {
+      // フォールバック: 隠し textarea 経由の execCommand
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (ok) done(); else flashCopyStatus("コピー失敗");
+      } catch (_) {
+        flashCopyStatus("コピー失敗");
+      }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(fail);
+    } else {
+      fail();
+    }
+  }
+
+  selectToggleBtn.addEventListener("click", function () { setSelectMode(!selectMode); });
+  selectAllBtn.addEventListener("click", selectAll);
+  selectClearBtn.addEventListener("click", selectClear);
+  copySelectedBtn.addEventListener("click", copySelectedPaths);
 
   function itemHeight(item) {
     return item.w * item.aspect;
@@ -527,6 +684,7 @@
 
     item.el.addEventListener("mousedown", function (e) {
       if (e.button !== 0) return;
+      if (selectMode) return; // 選択モード中はドラッグしない(click でトグル)
       e.preventDefault();
       item.el.style.zIndex = String(++zCounter); // 掴んだものを最前面へ
       itemDrag = {
@@ -543,6 +701,10 @@
     item.el.addEventListener("click", function () {
       if (suppressItemClick) {
         suppressItemClick = false;
+        return;
+      }
+      if (selectMode) {
+        toggleItemSelected(item);
         return;
       }
       if (!item.broken) openLightbox(item.index);
@@ -596,6 +758,10 @@
     label.className = "item-label";
     label.textContent = basename(path);
 
+    var check = document.createElement("div");
+    check.className = "item-check";
+    check.textContent = "✓"; // チェックマーク(選択時のみ濃色で見える)
+
     var item = {
       el: el,
       media: media,
@@ -637,6 +803,7 @@
 
     el.appendChild(media);
     el.appendChild(label);
+    el.appendChild(check);
     attachItemInteractions(item);
     items.push(item);
     return el;
@@ -910,6 +1077,16 @@
         case "+": case "=": adjustBaseSize(20); break;
         case "-": case "_": adjustBaseSize(-20); break;
         case "r": layoutItems(); break;
+        case "s": setSelectMode(!selectMode); break;
+        case "Escape": if (selectMode) setSelectMode(false); else return; break;
+        case "a":
+          if (selectMode && (e.metaKey || e.ctrlKey)) selectAll();
+          else return;
+          break;
+        case "c":
+          if (selectMode && (e.metaKey || e.ctrlKey) && selected.size > 0) copySelectedPaths();
+          else return;
+          break;
         default: return;
       }
       e.preventDefault();
