@@ -17,31 +17,28 @@ This puts a `moodboard` command on your PATH.
 ## Usage
 
 ```sh
-moodboard <image paths...>
+moodboard [--target <name>] <image paths...>
+moodboard --close <name>
+moodboard --list
 ```
 
-- Paths may be relative or absolute (resolved and `encodeURIComponent`-ed internally). Spaces and non-ASCII characters are fine
-- Closing the window ends the process
+- `--target` works like `target="xxx"` in HTML: if a window with that name is open, its contents are replaced (the window keeps its position); otherwise a new window opens under that name. The name is also the window title. Names may contain letters, digits and `. _ -`
+- Without `--target`, every call opens a new window
+- `--close <name>` closes only that window. `--list` prints the open named windows
+- Paths may be relative or absolute. Spaces and non-ASCII characters are fine
 
-When launching from an agent, use `nohup` + `disown` so the window survives the end of the tool call.
+The launcher opens the window in a detached child process (its own session), waits until the page reports that every image has settled, then exits. Run it in the foreground; no `nohup` / `&` / `disown` is needed, and the window survives the end of an agent's tool call. The exit code tells whether the window is really showing the images:
 
-```sh
-pkill -f "bin/moodboard" 2>/dev/null || true
-sleep 0.2
-nohup moodboard <image paths...> >/tmp/moodboard.log 2>&1 & disown
-```
+| code | meaning |
+| --- | --- |
+| 0 | shown; prints `opened target=<name> pid=<pid> 新規\|差し替え images=<n>` |
+| 1 | bad arguments or a missing path |
+| 2 | not confirmed within 20 s (for a new window, the log path is printed) |
+| 3 | shown, but some images failed to load (listed) |
 
-- The leading `pkill` closes the previous window. Skip it if you want to keep the old window for comparison.
-  The pattern is `bin/moodboard` rather than `moodboard` so it does not kill unrelated processes such as an editor that has this repository open
-- A leftover window can be closed with `pkill -f "bin/moodboard"`
+When several agents share one machine, give each project its own name (e.g. the project directory name). Never close windows with `pkill`; that also closes other projects' windows.
 
-The launch shell returning successfully only proves that it accepted the background command. Some agent runners can still lose the detached child immediately afterwards, with an empty log. Before reporting that the window is open, verify the live process and the expected image path:
-
-```sh
-pgrep -fl "bin/moodboard"
-```
-
-No matching process means the window is not open. A process-list permission error is also not evidence of success; retry the check with the required permission. If the detached process disappears, run `moodboard <image paths...>` in a long-lived foreground tool session and keep that session alive. Report success only after the process check shows the expected image path.
+State lives in `/tmp/moodboard/` (`targets/<name>.pid`, pending replace requests, acks, and logs of new windows).
 
 ## UI
 
@@ -80,7 +77,9 @@ Then, when you want your coding agent to show you images, saying "open it in moo
 
 ## Implementation notes
 
-- `moodboard.ts` resolves `moodboard.html` next to itself via `import.meta.dir`, appends `?f=<encodeURIComponent(absolute path)>` for each image to the `file://` URL, and hands it to webview-bun
+- `moodboard.ts` resolves `moodboard.html` next to itself, appends `?rid=<request id>&f=<encodeURIComponent(absolute path)>...` to the `file://` URL, and hands it to webview-bun in a detached child (`moodboard.ts --window <config>`)
+- The page reports readiness through the bound `__moodboardReady(rid, failedPaths)`; the child writes it to `/tmp/moodboard/acks/<rid>.json`, which the launcher waits for
+- Replacing a named window: the launcher writes `/tmp/moodboard/targets/<name>.request.json`; the page polls the bound `__moodboardPoll()` every 500 ms and `location.replace`s to the new URL. Polling from the page is needed because Bun's event loop does not run while `webview.run()` owns the thread
 - webview-bun resolves its dylib/so through a package-relative import (`../build/libwebview.dylib` etc.), so it works under a global install as well (it reads from `node_modules/webview-bun/build/`)
 - Verified on macOS (WKWebView) only. webview-bun ships Linux/Windows binaries too, but those have not been tested
 

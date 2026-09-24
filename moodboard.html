@@ -393,6 +393,7 @@
   var MIN_ZOOM = 0.05;
   var MAX_ZOOM = 32;
   var FIT_MARGIN = 40; // px margin kept around the image when fitting
+  var REPLACE_POLL_MS = 500; // 同名 target への差し替え要求を見に行く間隔
   var BG_STATES = ["dark", "checker", "white"];
   var BG_LABELS = { dark: "ダーク", checker: "市松", white: "白" };
 
@@ -449,6 +450,7 @@
 
   // ---------------- state ----------------
   var imagePaths = getImagePaths();
+  var failedPaths = [];
   var bgIndex = 0;
 
   var lightboxState = {
@@ -785,6 +787,7 @@
     });
 
     media.addEventListener("error", function () {
+      failedPaths.push(path);
       item.broken = true;
       item.aspect = 0.5;
       el.classList.add("error");
@@ -822,7 +825,10 @@
     var pending = imagePaths.length;
     function settled() {
       pending--;
-      if (pending === 0) layoutItems();
+      if (pending === 0) {
+        layoutItems();
+        notifyLauncherReady();
+      }
     }
 
     var fragment = document.createDocumentFragment();
@@ -1095,10 +1101,31 @@
 
   document.addEventListener("keydown", onKeyDown);
 
+  // ---------------- launcher bridge ----------------
+  // __moodboardReady / __moodboardPoll は moodboard.ts が webview.bind で注入する。
+  // http 経由の検証用ページには無いので、その場合は何もしない
+  function notifyLauncherReady() {
+    var requestId = new URLSearchParams(window.location.search).get("rid");
+    if (requestId && typeof window.__moodboardReady === "function") {
+      window.__moodboardReady(requestId, failedPaths);
+    }
+  }
+
+  // 同名 target への差し替え要求を受け取り、新しい画像一覧のページに置き換える
+  function startReplacePolling() {
+    if (typeof window.__moodboardPoll !== "function") return;
+    setInterval(function () {
+      window.__moodboardPoll().then(function (url) {
+        if (url) window.location.replace(url);
+      });
+    }, REPLACE_POLL_MS);
+  }
+
   // ---------------- init ----------------
   function init() {
     setBaseSize(parseInt(gridSizeSlider.value, 10));
     renderCanvas();
+    startReplacePolling();
   }
 
   init();

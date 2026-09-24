@@ -7,36 +7,39 @@ description: 複数画像(PNG/WebP/animated GIF)や動画(mov/webm/mp4)をライ
 
 `moodboard` コマンド(bun + webview-bun の WKWebView 窓)で開く。**サーバもブラウザも不要**。
 
-## 開き方(この 1 コマンドだけ)
+## 開き方
 
 ```sh
 command -v moodboard >/dev/null || bun install -g github:mohhh-ok/moodboard
-pkill -f "bin/moodboard" 2>/dev/null || true
-sleep 0.2
-nohup moodboard <画像パス...> >/tmp/moodboard.log 2>&1 & disown
+moodboard --target <名前> <画像パス...>; echo "rc=$?"
 ```
 
-- 最初は `nohup`+`disown` で起動する。素の `&` はツール呼び出し終了と一緒に窓が死ぬ
-- 先頭の pkill は窓溜まり防止。前の窓を残して見比べたい文脈では省く
-- パスは相対でもよい(内部で resolve + encodeURIComponent する)。スペース・日本語可
+- 前面でそのまま実行する。`nohup`・`&`・`disown` は付けない。ウィンドウは moodboard 自身が別セッションの子プロセスで開くので、ツール呼び出しが終わっても残る。ランチャーは表示を確認して数秒で終わる
+- `--target` は HTML の `target="xxx"` と同じ。同じ名前のウィンドウが開いていればその中身を差し替え(位置はそのまま)、無ければその名前で新しく開く。名前はウィンドウのタイトルにも出る
+- 名前は作業ディレクトリ名(プロジェクト名)で始める。並べて見比べたいときは用途を足す(例: `billionclips`、`billionclips-before` と `billionclips-after`)。名前は英数字と `. _ -` だけ
+- `--target` を省くと毎回新しいウィンドウになる。窓がたまるので、エージェントは必ず `--target` を付ける
+- パスは相対でもよい。スペース・日本語可
+- zsh で多数枚を変数に入れて渡すときは配列にする(`FILES=(); FILES+=("$f"); moodboard --target x "${FILES[@]}"`)。`moodboard $FILES` は zsh では 1 引数になる
 
-### 「開いた」の確認は別に行う
+### 「開いた」と報告してよい条件
 
-バックグラウンド起動を受け付けたシェルの終了コード 0 は、moodboard の生存確認ではない。エージェントの
-実行環境によっては、`nohup`+`disown` の子プロセスが直後に終了し、ログも空のままになる。起動後は必ず
-次を実行し、対象画像のパスを引数に持つ実プロセスが残っていることを確認する。
+終了コードが 0 で、`opened target=<名前> pid=<PID> 新規|差し替え images=<枚数>` が出たときだけ。この行はページが全画像の読み込みを終えた通知を受けてから出る。
+
+- `1` = 引数の誤り、または存在しないパス(一覧が出る)
+- `2` = 20 秒以内に表示を確認できなかった(新規なら log のパスが出る)
+- `3` = 開いたが読み込めない画像があった(一覧が出る)。そのままユーザーに見せず、原因を先に見る
+
+## 閉じる・一覧
 
 ```sh
-pgrep -fl "bin/moodboard"
+moodboard --close <名前>   # その名前のウィンドウだけ閉じる
+moodboard --list           # 開いている名前付きウィンドウ
 ```
 
-- 一致なしなら開いていない。`pgrep` 自体が権限エラーになった場合も成功扱いせず、プロセス一覧を読める
-  権限で再確認する
-- デタッチしたプロセスが消えたら、長時間維持される前面の tool session で
-  `moodboard <画像パス...>` を起動し、その session を生かしておく
-- 対象画像のパスを含む実プロセスを確認するまでは、ユーザーに「開いた」と報告しない
-
 ## 絶対にやらないこと
+
+- **`pkill -f moodboard` 等で全体を閉じない**。別のプロジェクト・別のインスタンスのウィンドウまで閉じる。閉じるのは `--close <自分の名前>` だけ
+- 他のプロジェクトの名前を `--target` に使わない(そのウィンドウの中身を上書きする)
 
 - **`open "file://...?クエリ"` 禁止**。macOS の LaunchServices がクエリを落とし空表示になる(実害あり)
 - **Playwright MCP でこのビューアを開かない**(file: ブロックあり。かつ Chrome チャネル起動で
@@ -55,5 +58,5 @@ pgrep -fl "bin/moodboard"
 
 ## 備考
 
-- 窓を閉じればプロセスも終わる。残った場合は `pkill -f "bin/moodboard"`
+- 窓を閉じればプロセスも終わる。状態ファイルは `/tmp/moodboard/`(targets に名前ごとの pid、logs に新規起動のログ)
 - ビューア本体の変更・検証手順は [README](https://github.com/mohhh-ok/moodboard)
