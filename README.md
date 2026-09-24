@@ -38,7 +38,7 @@ The launcher opens the window in a detached child process (its own session), wai
 
 When several agents share one machine, give each project its own name (e.g. the project directory name). Never close windows with `pkill`; that also closes other projects' windows.
 
-State lives in `/tmp/moodboard/` (`targets/<name>.pid`, pending replace requests, acks, and logs of new windows).
+State lives in `/tmp/moodboard-<uid>/` (mode 0700, owner checked on every run) (`targets/<name>.pid`, pending replace requests, acks, and logs of new windows).
 
 ## UI
 
@@ -78,8 +78,8 @@ Then, when you want your coding agent to show you images, saying "open it in moo
 ## Implementation notes
 
 - `moodboard.ts` resolves `moodboard.html` next to itself, appends `?rid=<request id>&f=<encodeURIComponent(absolute path)>...` to the `file://` URL, and hands it to webview-bun in a detached child (`moodboard.ts --window <config>`)
-- The page reports readiness through the bound `__moodboardReady(rid, failedPaths)`; the child writes it to `/tmp/moodboard/acks/<rid>.json`, which the launcher waits for
-- Replacing a named window: the launcher writes `/tmp/moodboard/targets/<name>.request.json`; the page polls the bound `__moodboardPoll()` every 500 ms and `location.replace`s to the new URL. Polling from the page is needed because Bun's event loop does not run while `webview.run()` owns the thread
+- The page reports readiness through the bound `__moodboardReady(rid, failedPaths)`; the child writes it to `/tmp/moodboard-<uid>/acks/<rid>.json`, which the launcher waits for
+- Replacing a named window: the launcher writes `/tmp/moodboard-<uid>/targets/<name>.request.json`; the page polls the bound `__moodboardPoll()` every 500 ms and `location.replace`s to the new URL. Polling from the page is needed because Bun's event loop does not run while `webview.run()` owns the thread
 - webview-bun resolves its dylib/so through a package-relative import (`../build/libwebview.dylib` etc.), so it works under a global install as well (it reads from `node_modules/webview-bun/build/`)
 - Verified on macOS (WKWebView) only. webview-bun ships Linux/Windows binaries too, but those have not been tested
 

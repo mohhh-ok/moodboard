@@ -16,13 +16,16 @@
 // Bun のイベントループが回らないため、Bun 側から能動的には呼べない。
 import { Webview, SizeHint } from "webview-bun";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
-// TMPDIR はエージェントの実行環境ごとに違うことがあるため、全プロセスで共有できる固定の場所に置く
-const STATE_DIR = "/tmp/moodboard";
+// TMPDIR はエージェントの実行環境ごとに違うことがあるため、同じユーザーの全プロセスで共有できる
+// 固定の場所に置く。/tmp は他ユーザーも書けるので、uid 付きの 0700 ディレクトリにして持ち主を確かめる
+if (process.getuid === undefined) throw new Error("moodboard は POSIX 環境だけに対応しています");
+const USER_ID = process.getuid();
+const STATE_DIR = `/tmp/moodboard-${USER_ID}`;
 const TARGETS_DIR = join(STATE_DIR, "targets");
 const ACKS_DIR = join(STATE_DIR, "acks");
 const LOGS_DIR = join(STATE_DIR, "logs");
@@ -41,7 +44,7 @@ type Ack = { pid: number; failedPaths: string[] };
 await main(process.argv.slice(2));
 
 async function main(argv: string[]) {
-  for (const dir of [TARGETS_DIR, ACKS_DIR, LOGS_DIR]) mkdirSync(dir, { recursive: true });
+  ensureStateDir();
 
   if (argv[0] === "--window") {
     runWindow(JSON.parse(argv[1]) as WindowConfig);
@@ -211,6 +214,22 @@ function findWindowPid(target: string): number | null {
   if (ps.status === 0 && isThisTarget) return pid;
   rmSync(pidPath(target), { force: true });
   return null;
+}
+
+// 他ユーザーが先に作ったディレクトリや symlink を使うと、要求ファイルの差し込みや書き込み先のすり替えができてしまう
+function ensureStateDir() {
+  try {
+    mkdirSync(STATE_DIR, { mode: 0o700 });
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  }
+  const stat = lstatSync(STATE_DIR);
+  const isOwnPrivateDir = stat.isDirectory() && stat.uid === USER_ID && (stat.mode & 0o077) === 0;
+  if (!isOwnPrivateDir) {
+    console.error(`${STATE_DIR} が自分の所有する権限 700 のディレクトリではありません。中身を確かめて削除してください`);
+    process.exit(1);
+  }
+  for (const dir of [TARGETS_DIR, ACKS_DIR, LOGS_DIR]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 // mkdir の原子性でロックを取る。持ち主が kill されて残ったロックは、待ち時間を超えていれば奪う
