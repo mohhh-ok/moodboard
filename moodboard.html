@@ -1,23 +1,32 @@
 <!DOCTYPE html>
 <!--
-  moodboard.html — 生成画像(PNG/WebP/animated GIF)・動画(mov/webm/mp4)を複数並べて確認するための
-  完全自己完結の静的ビューア(ライトテーブル方式)。ビルド不要・外部依存ゼロ・vanilla JS・1ファイル。
+  moodboard.html — 生成画像(PNG/WebP/animated GIF)・動画(mov/webm/mp4)・音声(wav/mp3/m4a/aac/flac/ogg/opus)を
+  複数並べて確認するための完全自己完結の静的ビューア(ライトテーブル方式)。
+  ビルド不要・外部依存ゼロ・vanilla JS・1ファイル。
 
-  動画は拡張子(mov/webm/mp4・大小無視)で自動判定し、<video autoplay muted loop playsinline> で
-  描画する。ライトテーブル上は全部ミュート(複数が同時に鳴るとうるさい)。音はライトボックスで
-  1 本ずつ出す(既定で音あり・m でミュート切替)。透過 alpha 付き待機ループ動画の見比べにも使う想定(背景切替=市松で透過確認)。
-  webm(VP9 alpha)は WKWebView で再生できないことがあり、その場合は再生不可の表示にフォールバックする。
+  動画は拡張子(mov/webm/mp4・大小無視)、音声は拡張子(wav/mp3/m4a/aac/flac/ogg/opus・大小無視)で自動判定する。
+  動画は <video autoplay muted loop playsinline> で描画する。ライトテーブル上は全部ミュート(複数が同時に
+  鳴るとうるさい)。音はライトボックスで1本ずつ出す(既定で音あり・m でミュート切替)。透過 alpha 付き待機
+  ループ動画の見比べにも使う想定(背景切替=市松で透過確認)。webm(VP9 alpha)は WKWebView で再生できない
+  ことがあり、その場合は再生不可の表示にフォールバックする。
+
+  音声はカード上に再生/一時停止ボタン・シークバー・経過/総時間を持つプレイヤーとして表示し、ライトボックス
+  では扱わない(クリックで開かない。lightbox の ←/→ は音声を飛ばす)。同時に鳴るのは1本だけ。
+
+  アイテムはセクション(見出し + 説明文)にグルーピングでき、各カードにはラベル(未指定ならファイル名)が
+  付く。board(セクション・ラベルの構造)は moodboard.ts が /tmp/moodboard-<uid>/boards/<rid>.json に書き、
+  このページは起動時に bind 関数 __moodboardLoad(rid) を呼んで読む。URL には rid だけが乗る。
 
   起動手順の正は README.md(moodboard.ts の webview-bun 窓で開く。サーバ・ブラウザ不要)。
 
   使い方:
-    moodboard <画像/動画パス...>
+    moodboard [--target <名前>] <画像/動画/音声パス...>
+    moodboard [--target <名前>] --json <board.json>
 
   注意: `open "file://...?クエリ"` は macOS の LaunchServices がクエリを落とすため不可。
   ブラウザで開きたい場合のみ、/ を配信するローカルサーバ経由の http で開く(toImgSrc が両対応)。
-
-  互換パラメータ:
-    ?imgs=<カンマ区切りの絶対パス> (f が1件でもあれば無視される)
+  その場合 __moodboardLoad / __moodboardReady / __moodboardPoll はホスト側(検証スクリプト)が
+  page.exposeFunction 等で注入する。
 -->
 <html lang="ja" data-bg="dark">
 <head>
@@ -71,19 +80,21 @@
   }
 
   /* ---------------- header ---------------- */
+  /* flex-wrap: wrap にして、狭い窓でボタン列や shortcuts-hint が収まりきらないときは
+     自然に2段目へ折り返す(画面外に切れる・重なるのを防ぐ)。高さは min-height にして
+     折り返し時に自動で伸びるようにする(固定 height だと2段目が枠外に隠れる) */
   #header {
     position: sticky;
     top: 0;
     z-index: 100000; /* item の zIndex は掴むたび増えるので大きく取る */
     display: flex;
     align-items: center;
-    gap: 18px;
-    height: 40px;
-    padding: 0 12px;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    min-height: 40px;
+    padding: 6px 12px;
     background: var(--header-bg);
     border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-    overflow-x: auto;
   }
 
   #image-count {
@@ -131,14 +142,17 @@
   .select-only { display: none; }
   body.selecting .select-only { display: inline-flex; align-items: center; }
 
+  /* 省略記号(ellipsis)で切り詰めない: 内容は操作の説明でありユーザーが読めることが必須。
+     flex-basis を確保しつつ min-width:0 で縮められるようにし、収まらない分は
+     white-space:normal で折り返す(必要なら #header の flex-wrap で2段目に丸ごと落ちる) */
   #shortcuts-hint {
-    flex: 1 1 auto;
-    min-width: 0;
+    flex: 1 1 260px;
+    min-width: 160px;
     color: var(--fg-dim);
-    text-align: right;
+    text-align: left;
     font-size: 11px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.7;
+    white-space: normal;
   }
   body.selecting #shortcuts-hint .hint-default { display: none; }
   #shortcuts-hint .hint-select { display: none; }
@@ -148,7 +162,27 @@
   /* 画像はクリッピングなし。ドラッグでどこへでも動かせ、重ねて比較できる */
   #canvas {
     position: relative;
+    /* header は折り返すと 40px より高くなるが、これは「最低このくらいの高さは確保する」という
+       目安値であり、canvas は #header の直後に通常フローで続くだけなので実際の重なり・位置には
+       影響しない(ズレるのは空アイテム時の余白量だけ) */
     min-height: calc(100vh - 40px);
+  }
+
+  /* ---- section heading(見出し + 説明) ---- */
+  .section-heading {
+    position: absolute;
+  }
+  .section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg);
+    margin-bottom: 4px;
+  }
+  .section-note {
+    font-size: 12px;
+    color: var(--fg-dim);
+    white-space: pre-wrap; /* 改行保持 */
+    line-height: 1.6;
   }
 
   .item {
@@ -191,6 +225,10 @@
     outline: 2px solid #6ea3ea;
     outline-offset: -1px;
   }
+  .item.selected .audio-player {
+    outline: 2px solid #6ea3ea;
+    outline-offset: -1px;
+  }
 
   .item img,
   .item video {
@@ -206,6 +244,82 @@
   .item:hover video { border-color: #555; }
   .item img.pixelated,
   .item video.pixelated { image-rendering: pixelated; }
+
+  /* ---- audio player card ---- */
+  .item .audio-player {
+    /* 高さは JS(applyItemStyle)が AUDIO_CARD_HEIGHT(操作 UI に合わせた固定値)を inline style で
+       設定する。幅だけが基準サイズ・ホイールで変わり、高さは変わらない(空白の箱にしない) */
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px;
+    cursor: pointer; /* ボタン/シークバー以外の領域クリックで再生/一時停止 */
+  }
+  .item:hover .audio-player { border-color: #555; }
+  /* 再生中の音声カード: 選択状態(青)と紛れない色(緑)で、離れていても分かるようにする。
+     枠色 + box-shadow だけだと、選択時の outline(2px, offset -1px、.item.selected .audio-player)が
+     枠の上に重なって見た目を青一色にしてしまい、選択中は再生中かどうか判別できなくなる(実害:
+     UI チェックで発見)。outline はカードの外周に描かれるだけで内側の背景までは覆わないため、
+     背景そのものに緑みを足し、再生ボタンの色も変えて、選択の青と同時でも判別できる要素を
+     border/outline 以外にも持たせる */
+  .item .audio-player.playing {
+    border-color: #3aa15a;
+    box-shadow: 0 0 0 2px rgba(58, 161, 90, 0.5);
+    background: rgba(58, 161, 90, 0.22);
+  }
+  .item .audio-player.playing .audio-playpause {
+    background: #3aa15a;
+    border-color: #2f8a4c;
+    color: #fff;
+  }
+  .item .audio-player audio { display: none; }
+  .audio-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .audio-playpause {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: #2a2a2a;
+    color: var(--fg);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+  }
+  .audio-playpause:hover { background: #333; }
+  .audio-seek {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .audio-time {
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: var(--fg-dim);
+  }
+
+  /* ---- selection checkbox と音声カード操作 UI の重なり回避 ----
+     .item-check は item 基準で top/left 6px・22x22(x/y とも 6〜28px を専有)。音声カードの
+     再生ボタンは box の padding(8px)ぶん内側の x/y 9px 付近から始まるため、選択モード中は
+     ボタンの大部分がチェックボックスの下に隠れていた(実害: fix3-01-playing-selected-closeup.png)。
+     チェックボックスの位置は画像・動画とも揃えている(前回 UI チェック評価済み)ため動かさず、
+     音声カード側の操作行(再生ボタン+シークバー)と時間表示を右にずらして避ける。
+     カード高さは AUDIO_CARD_HEIGHT で固定なので縦方向の余白では対応できず、横方向のみで解決する
+     (時間表示は元々チェックボックスの下端(28px)より下にあり縦方向では重ならないが、操作行と
+     揃えて見た目を統一するために同じ分だけ揃えてずらす) */
+  body.selecting .item .audio-row,
+  body.selecting .item .audio-time {
+    padding-left: 24px;
+  }
 
   .item-ph {
     width: 100%;
@@ -232,8 +346,10 @@
     pointer-events: none;
   }
 
-  /* ---------------- empty state ---------------- */
-  #empty-state {
+  /* ---------------- empty state / load error state ---------------- */
+  /* #load-error-state は「board を渡さず開いた(本当に空)」の #empty-state とは別の見た目にし、
+     読み込みに失敗したことが分かるようにする(見出しをエラー色にするだけで、他は共通スタイル) */
+  #empty-state, #load-error-state {
     display: none;
     height: 100vh;
     align-items: center;
@@ -243,12 +359,13 @@
     text-align: center;
     padding: 20px;
   }
-  #empty-state h1 {
+  #empty-state h1, #load-error-state h1 {
     font-size: 15px;
     font-weight: 600;
     color: var(--fg);
     margin: 0;
   }
+  #load-error-state h1 { color: var(--error); }
   #empty-state pre {
     background: #1e1e1e;
     border: 1px solid var(--border);
@@ -262,7 +379,7 @@
     color: #b8d8b8;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
   }
-  #empty-state p {
+  #empty-state p, #load-error-state p {
     color: var(--fg-dim);
     max-width: 640px;
     line-height: 1.6;
@@ -338,12 +455,37 @@
     cursor: pointer;
   }
   #lightbox-close:hover { background: rgba(40, 40, 40, 0.85); }
+
+  /* ---- lightbox sound toggle ----
+     以前は #lightbox-info の文字列末尾に小さい絵文字(🔊/🔇)を混ぜていたが、11px の
+     monospace 内では判別しづらかった。独立したボタンにして、アイコンは本文と同じくらいの
+     文字サイズ・ラベル併記・ミュート時は枠色も変える(色だけに頼らない三重の見分け方) */
+  #lightbox-sound-toggle {
+    display: none; /* isVideo のときだけ JS で flex にする */
+    position: absolute;
+    right: 12px;
+    bottom: 10px;
+    align-items: center;
+    gap: 6px;
+    color: #ddd;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  #lightbox-sound-toggle:hover { background: rgba(40, 40, 40, 0.85); }
+  #lightbox-sound-toggle .lightbox-sound-icon { font-size: 16px; line-height: 1; }
+  #lightbox-sound-toggle.muted { color: #f0a0a0; border-color: #a04040; }
 </style>
 </head>
 <body>
 
   <div id="header">
-    <span id="image-count">0 images</span>
+    <span id="image-count">0 items</span>
     <span id="grid-size-control">
       <label for="grid-size-slider">size</label>
       <input type="range" id="grid-size-slider" min="120" max="640" step="10" value="220">
@@ -364,15 +506,23 @@
   <div id="canvas"></div>
 
   <div id="empty-state">
-    <h1>moodboard — 画像/動画が指定されていません</h1>
+    <h1>moodboard — 表示するアイテムがありません</h1>
     <p>
-      GET パラメータ <code>f</code>(絶対パスを encodeURIComponent、繰り返し指定可)、
-      もしくは互換の <code>imgs</code>(カンマ区切りの絶対パス)で画像/動画(mov/webm/mp4)を渡してください。
+      moodboard コマンド経由で開いてください。画像・動画(mov/webm/mp4)・音声(wav/mp3/m4a/aac/flac/ogg/opus)を渡せます。
     </p>
-    <pre>moodboard &lt;画像/動画パス...&gt;
+    <pre>moodboard [--target &lt;名前&gt;] &lt;パス...&gt;
+moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
 
 注意: open "file://...?クエリ" は macOS がクエリを落とすので不可。
 手順の正は README.md</pre>
+  </div>
+
+  <div id="load-error-state">
+    <h1>moodboard — 表示データの読み込みに失敗しました</h1>
+    <p>
+      board の読み込み中にエラーが発生しました(タイムアウトや状態ファイルの競合など)。
+      このウィンドウを閉じ、moodboard コマンドをもう一度実行してください。
+    </p>
   </div>
 
   <div id="lightbox">
@@ -382,6 +532,7 @@
       <div id="lightbox-error"></div>
     </div>
     <div id="lightbox-info"></div>
+    <button id="lightbox-sound-toggle" type="button" title="音声のオン/オフ切り替え (m)"></button>
     <button id="lightbox-close" type="button" title="閉じる (Esc)">&times;</button>
   </div>
 
@@ -394,8 +545,18 @@
   var MAX_ZOOM = 32;
   var FIT_MARGIN = 40; // px margin kept around the image when fitting
   var REPLACE_POLL_MS = 500; // 同名 target への差し替え要求を見に行く間隔
+  var RESIZE_DEBOUNCE_MS = 200; // window resize 連続発火(リサイズ中に大量に飛ぶ)を間引く間隔
   var BG_STATES = ["dark", "checker", "white"];
   var BG_LABELS = { dark: "ダーク", checker: "市松", white: "白" };
+  // 音声カードは画像・動画と違って「自然な視覚サイズ」を持たない(mediaWidth は常に0)。
+  // 高さは操作 UI(ボタン+シークバー行・時間表示・上下 padding)がちょうど収まる固定値にし、
+  // 基準サイズ・ホイールでは幅だけが変わるようにする(高さ比例だと空白の箱になるため)。
+  // 実測(padding 8px×2 + ボタン行26px + gap6px + 時間表示行)に基づく値
+  var AUDIO_CARD_HEIGHT = 64;
+  // wheel 拡大の上限。画像・動画は物理ピクセル基準の MAX_ZOOM で自然に上限が付くが、音声は
+  // mediaWidth が常に0でその仕組みが効かない。基準サイズスライダーの上限(640px)に揃えて、
+  // 際限なく拡大して画面を覆うのを防ぐ
+  var AUDIO_MAX_WIDTH = 640;
 
   // ---------------- shared helpers ----------------
   function clamp(v, lo, hi) {
@@ -423,33 +584,36 @@
     return /\.(mov|webm|mp4)$/i.test(path);
   }
 
-  // <img> の naturalWidth/naturalHeight と <video> の videoWidth/videoHeight を吸収する
+  function isAudioPath(path) {
+    return /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(path);
+  }
+
+  // <img> の naturalWidth/naturalHeight と <video> の videoWidth/videoHeight を吸収する。
+  // 音声には視覚的な寸法が無いので 0 を返す
   function mediaWidth(media) {
     if (!media) return 0;
-    return media.tagName === "VIDEO" ? media.videoWidth : media.naturalWidth;
+    if (media.tagName === "VIDEO") return media.videoWidth;
+    if (media.tagName === "IMG") return media.naturalWidth;
+    return 0;
   }
 
   function mediaHeight(media) {
     if (!media) return 0;
-    return media.tagName === "VIDEO" ? media.videoHeight : media.naturalHeight;
+    if (media.tagName === "VIDEO") return media.videoHeight;
+    if (media.tagName === "IMG") return media.naturalHeight;
+    return 0;
   }
 
-  // ---------------- param parsing ----------------
-  function getImagePaths() {
-    var params = new URLSearchParams(window.location.search);
-    var fParams = params.getAll("f");
-    if (fParams.length > 0) {
-      return fParams;
-    }
-    var imgsParam = params.get("imgs");
-    if (imgsParam) {
-      return imgsParam.split(",").filter(function (p) { return p.length > 0; });
-    }
-    return [];
+  function formatAudioTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) seconds = 0;
+    var m = Math.floor(seconds / 60);
+    var s = Math.floor(seconds % 60);
+    return m + ":" + (s < 10 ? "0" : "") + s;
   }
 
   // ---------------- state ----------------
-  var imagePaths = getImagePaths();
+  var sections = [];    // [{ title, note, entries: [{path,label}], cards: [item...], headingEl }]
+  var items = [];       // 全アイテムのフラット配列(lightbox 送り・選択コピーの順序はこの配列基準)
   var failedPaths = [];
   var bgIndex = 0;
 
@@ -474,6 +638,7 @@
   var headerEl = document.getElementById("header");
   var canvasEl = document.getElementById("canvas");
   var emptyStateEl = document.getElementById("empty-state");
+  var loadErrorStateEl = document.getElementById("load-error-state");
   var imageCountEl = document.getElementById("image-count");
   var gridSizeSlider = document.getElementById("grid-size-slider");
   var gridSizeLabel = document.getElementById("grid-size-label");
@@ -490,6 +655,7 @@
   var lightboxVideo = document.getElementById("lightbox-video");
   var lightboxErrorEl = document.getElementById("lightbox-error");
   var lightboxInfoEl = document.getElementById("lightbox-info");
+  var lightboxSoundToggleBtn = document.getElementById("lightbox-sound-toggle");
   var lightboxCloseBtn = document.getElementById("lightbox-close");
 
   // ---------------- base size ----------------
@@ -524,10 +690,15 @@
   var MIN_ITEM_WIDTH = 40;
   var LAYOUT_GAP = 14;
   var LABEL_SPACE = 22;
-  var items = [];
   var itemDrag = null;           // 進行中のドラッグ
-  var suppressItemClick = false; // ドラッグ直後の click でライトボックスを開かない
+  var suppressItemClick = false; // ドラッグ直後の click でライトボックス/再生を発火しない
   var zCounter = 1;
+  // ユーザーがドラッグ移動 or wheel リサイズでどれか1つでもカードを手動配置したら true。
+  // window resize での自動再整列(下記 "window resize" 節)はこれが false の間だけ行う。
+  // 手動配置後は自動再整列で崩さず、r キーでの明示的な再整列だけがそれをリセットする
+  // (layoutItems() 自体の末尾でリセットする。理由: 手動配置が1つでもあれば全体を勝手に
+  // 組み直さない方が安全 — どのカードを崩していいかの部分判定はせず、崩すなら r で全部まとめて)
+  var manualLayoutChanged = false;
 
   // ---------------- selection ----------------
   var selectMode = false;
@@ -588,10 +759,10 @@
 
   function copySelectedPaths() {
     if (selected.size === 0) return;
-    // 表示順(imagePaths の元順)で並べる
+    // 表示順(items の元順)で並べる
     var paths = [];
-    imagePaths.forEach(function (p, i) {
-      if (selected.has(i)) paths.push(p);
+    items.forEach(function (it, i) {
+      if (selected.has(i)) paths.push(it.path);
     });
     var text = paths.join("\n");
     var done = function () { flashCopyStatus(paths.length + " 件コピー"); };
@@ -623,8 +794,31 @@
   selectClearBtn.addEventListener("click", selectClear);
   copySelectedBtn.addEventListener("click", copySelectedPaths);
 
+  // ---------------- audio playback ----------------
+  // 同時に鳴るのは1本だけ: どれかを再生したら他の音声は一時停止する。
+  // exceptItem に null を渡すと全ての音声カードを止める(ライトボックスで動画の音を出す前などに使う)
+  function pauseAllAudioExcept(exceptItem) {
+    items.forEach(function (it) {
+      if (it.kind === "audio" && it !== exceptItem && it.media && !it.media.paused) {
+        it.media.pause();
+      }
+    });
+  }
+
+  function toggleAudioPlayback(item) {
+    if (item.broken || !item.media) return;
+    if (item.media.paused) {
+      pauseAllAudioExcept(item);
+      var playPromise = item.media.play();
+      if (playPromise && playPromise.catch) playPromise.catch(function () {});
+    } else {
+      item.media.pause();
+    }
+  }
+
   function itemHeight(item) {
-    return item.w * item.aspect;
+    // 音声カードは幅に関わらず固定高さ(操作 UI に合わせる)。画像・動画は従来どおり幅×aspect
+    return item.kind === "audio" ? AUDIO_CARD_HEIGHT : item.w * item.aspect;
   }
 
   function applyItemStyle(item) {
@@ -632,6 +826,7 @@
     item.el.style.top = item.y + "px";
     item.el.style.width = item.w + "px";
     if (item.ph) item.ph.style.height = itemHeight(item) + "px";
+    if (item.audioBox) item.audioBox.style.height = itemHeight(item) + "px";
     if (item.media) {
       var mw = mediaWidth(item.media);
       if (mw) {
@@ -643,25 +838,39 @@
   }
 
   // 初期整列。r キー・基準サイズ変更でも呼ぶ。以降の移動・リサイズは自由。
+  // セクションごとに「見出し(あれば)→そのカード群」を上から積む
   function layoutItems() {
     var base = parseInt(gridSizeSlider.value, 10);
     var maxW = Math.max(canvasEl.clientWidth, base + LAYOUT_GAP * 2);
-    var x = LAYOUT_GAP, y = LAYOUT_GAP, rowH = 0;
-    items.forEach(function (item) {
-      item.w = base;
-      var h = itemHeight(item) + LABEL_SPACE;
-      if (x + base > maxW - LAYOUT_GAP && x > LAYOUT_GAP) {
-        x = LAYOUT_GAP;
-        y += rowH + LAYOUT_GAP;
-        rowH = 0;
+    var headingWidth = maxW - LAYOUT_GAP * 2;
+    var y = LAYOUT_GAP;
+    sections.forEach(function (section) {
+      if (section.headingEl) {
+        section.headingEl.style.left = LAYOUT_GAP + "px";
+        section.headingEl.style.top = y + "px";
+        section.headingEl.style.width = headingWidth + "px";
+        y += section.headingEl.offsetHeight + LAYOUT_GAP;
       }
-      item.x = x;
-      item.y = y;
-      rowH = Math.max(rowH, h);
-      x += base + LAYOUT_GAP;
-      applyItemStyle(item);
+      var x = LAYOUT_GAP, rowH = 0;
+      section.cards.forEach(function (item) {
+        item.w = base;
+        var h = itemHeight(item) + LABEL_SPACE;
+        if (x + base > maxW - LAYOUT_GAP && x > LAYOUT_GAP) {
+          x = LAYOUT_GAP;
+          y += rowH + LAYOUT_GAP;
+          rowH = 0;
+        }
+        item.x = x;
+        item.y = y;
+        rowH = Math.max(rowH, h);
+        x += base + LAYOUT_GAP;
+        applyItemStyle(item);
+      });
+      if (section.cards.length > 0) y += rowH + LAYOUT_GAP;
     });
-    canvasEl.style.minHeight = (y + rowH + LAYOUT_GAP) + "px";
+    canvasEl.style.minHeight = y + "px";
+    // 呼ばれた時点で全カードがグリッド配置に戻るので、手動配置フラグもここでリセットする
+    manualLayoutChanged = false;
   }
 
   function attachItemInteractions(item) {
@@ -671,17 +880,35 @@
       var px = e.clientX - cRect.left;
       var py = e.clientY - cRect.top;
       var factor = Math.exp(-e.deltaY * 0.0015);
-      var mw = mediaWidth(item.media);
-      var maxW = mw
-        ? mw * MAX_ZOOM / devicePixelRatioSafe()
-        : 4096;
+      var maxW;
+      if (item.kind === "audio") {
+        // mediaWidth が常に0(自然な視覚サイズが無い)ため、画像・動画の物理ズーム上限が効かない。
+        // 基準サイズの上限と揃えた固定上限を使う(AUDIO_MAX_WIDTH の定義コメント参照)
+        maxW = AUDIO_MAX_WIDTH;
+      } else {
+        var mw = mediaWidth(item.media);
+        maxW = mw ? mw * MAX_ZOOM / devicePixelRatioSafe() : 4096;
+      }
       var newW = clamp(item.w * factor, MIN_ITEM_WIDTH, maxW);
       var ratio = newW / item.w;
-      // カーソル位置を不動点にリサイズ
+      // カーソル位置を不動点にリサイズ。音声カードは高さが固定(itemHeight 参照)で縦に伸び縮みしないので、
+      // y に ratio を掛けるとカードだけが上下にずれ、上端の行ではヘッダーの裏へ潜って操作できなくなる
+      var yRatio = item.kind === "audio" ? 1 : ratio;
       item.x = px - (px - item.x) * ratio;
-      item.y = py - (py - item.y) * ratio;
+      item.y = py - (py - item.y) * yRatio;
       item.w = newW;
+      if (item.kind === "audio") {
+        // 音声カードだけの補正: canvas の左端(x=0)より左は document 座標としてマイナスになり、
+        // ページは横方向にマイナス側へスクロールできないため、はみ出した部分は二度と見えず
+        // 再生ボタン・シークバー・ラベルごと操作不能になる(画面右にはみ出す分は横スクロールで
+        // 回収できるので左だけが問題)。画像・動画は見て比較するだけで操作 UI を持たないため
+        // 起きても実害が薄く、この節では触らない(既存のカーソル追従ズームの感触を保つ)。
+        // 音声カードは操作 UI そのものなので、カーソル追従で計算した x が 0 を下回るときだけ
+        // 0 に補正する(それ以外の位置では今までどおりカーソル位置を不動点にした拡大縮小のまま)
+        item.x = Math.max(0, item.x);
+      }
       applyItemStyle(item);
+      manualLayoutChanged = true; // 手動リサイズ済み: window resize での自動再整列を抑止する
     }, { passive: false });
 
     item.el.addEventListener("mousedown", function (e) {
@@ -709,7 +936,12 @@
         toggleItemSelected(item);
         return;
       }
-      if (!item.broken) openLightbox(item.index);
+      if (item.broken) return;
+      if (item.kind === "audio") {
+        toggleAudioPlayback(item);
+      } else {
+        openLightbox(item.index);
+      }
     });
   }
 
@@ -731,17 +963,48 @@
   document.addEventListener("mouseup", function () {
     if (!itemDrag) return;
     itemDrag.item.el.classList.remove("grabbing");
-    if (itemDrag.moved) suppressItemClick = true;
+    if (itemDrag.moved) {
+      suppressItemClick = true;
+      manualLayoutChanged = true; // 手動ドラッグ移動済み: window resize での自動再整列を抑止する
+    }
     itemDrag = null;
   });
 
-  // ---------------- canvas rendering ----------------
-  function createItem(path, index, onSettled) {
-    var el = document.createElement("div");
-    el.className = "item";
-    el.title = path;
+  // ---------------- window resize(自動再整列) ----------------
+  // 窓の幅を変えてもカードは初期座標のまま動かず、右側が画面外にはみ出す不具合の対策。
+  // resize は連続で大量に発火するため debounce し、収まってから1回だけ layoutItems() を呼ぶ。
+  // ただしユーザーがドラッグ/wheel で1つでも手動配置していたら(manualLayoutChanged)、
+  // それを勝手に崩さないよう自動再整列はスキップする(明示的に崩したいときは r キー)。
+  var resizeDebounceTimer = null;
+  window.addEventListener("resize", function () {
+    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = setTimeout(function () {
+      resizeDebounceTimer = null;
+      if (!manualLayoutChanged) layoutItems();
+    }, RESIZE_DEBOUNCE_MS);
+  });
 
-    var isVideo = isVideoPath(path);
+  // ---------------- canvas rendering ----------------
+  function createSectionHeading(section) {
+    var el = document.createElement("div");
+    el.className = "section-heading";
+    if (section.title) {
+      var title = document.createElement("div");
+      title.className = "section-title";
+      title.textContent = section.title;
+      el.appendChild(title);
+    }
+    if (section.note) {
+      var note = document.createElement("div");
+      note.className = "section-note";
+      note.textContent = section.note; // white-space:pre-wrap で改行保持
+      el.appendChild(note);
+    }
+    return el;
+  }
+
+  // 画像/動画のカード内容を組み立てる(共通の label/check は createItem 側で付ける)
+  function buildMediaCard(item, el, path, isVideo, label, onSettled) {
     var media = document.createElement(isVideo ? "video" : "img");
     if (isVideo) {
       media.autoplay = true;
@@ -756,33 +1019,12 @@
     media.draggable = false;
     media.addEventListener("dragstart", function (e) { e.preventDefault(); });
 
-    var label = document.createElement("div");
-    label.className = "item-label";
-    label.textContent = basename(path);
-
-    var check = document.createElement("div");
-    check.className = "item-check";
-    check.textContent = "✓"; // チェックマーク(選択時のみ濃色で見える)
-
-    var item = {
-      el: el,
-      media: media,
-      isVideo: isVideo,
-      ph: null,
-      path: path,
-      index: index,
-      x: 0,
-      y: 0,
-      w: parseInt(gridSizeSlider.value, 10),
-      aspect: 1,
-      broken: false
-    };
+    item.media = media;
 
     media.addEventListener(isVideo ? "loadedmetadata" : "load", function () {
       var w = mediaWidth(media);
       var h = mediaHeight(media);
       item.aspect = (w ? h / w : 0) || 1;
-      label.textContent = basename(path) + "  " + w + "×" + h;
       onSettled();
     });
 
@@ -798,13 +1040,161 @@
       ph.textContent = isVideo ? "再生不可: " + basename(path) : "load failed: " + path;
       item.ph = ph;
       el.insertBefore(ph, label);
-      label.textContent = basename(path) + " (error)";
       onSettled();
     });
 
     media.src = toImgSrc(path);
-
     el.appendChild(media);
+  }
+
+  // 音声カードを組み立てる: 再生/一時停止ボタン・シークバー・経過/総時間を持つプレイヤー
+  function buildAudioCard(item, el, path, label, onSettled) {
+    var box = document.createElement("div");
+    box.className = "audio-player";
+
+    var audio = document.createElement("audio");
+    audio.preload = "metadata";
+    audio.addEventListener("dragstart", function (e) { e.preventDefault(); });
+
+    var playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "audio-playpause";
+    playBtn.textContent = "▶";
+    playBtn.title = "再生 / 一時停止";
+
+    var seek = document.createElement("input");
+    seek.type = "range";
+    seek.className = "audio-seek";
+    seek.min = "0";
+    seek.max = "1000";
+    seek.value = "0";
+    seek.disabled = true; // duration が分かるまでは動かせない
+    seek.title = "シーク";
+
+    var timeEl = document.createElement("span");
+    timeEl.className = "audio-time";
+    timeEl.textContent = "0:00 / 0:00";
+
+    var row = document.createElement("div");
+    row.className = "audio-row";
+    row.appendChild(playBtn);
+    row.appendChild(seek);
+    box.appendChild(row);
+    box.appendChild(timeEl);
+    box.appendChild(audio);
+
+    item.media = audio;
+    item.audioBox = box;
+
+    var seeking = false; // このカードのシークバーをドラッグ中か(timeupdate と競合させない)
+
+    function refreshSeekUI() {
+      var duration = isFinite(audio.duration) ? audio.duration : 0;
+      if (duration > 0) {
+        seek.disabled = false;
+        if (!seeking) seek.value = String(Math.round((audio.currentTime / duration) * 1000));
+      }
+      timeEl.textContent = formatAudioTime(audio.currentTime) + " / " + formatAudioTime(duration);
+    }
+
+    // ボタン・シークバーの操作は、通常時はカードの drag 開始やクリック再生トグルに伝播させず
+    // 自分で再生/シークを行う。選択モード中はここでは何もせず stopPropagation もしない
+    // (クリックが item.el まで bubble し、通常のカードクリックと同じ分岐(attachItemInteractions
+    // の click ハンドラ)で選択トグルになる。分岐をここに重複させない)
+    playBtn.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+    playBtn.addEventListener("click", function (e) {
+      if (selectMode) return;
+      e.stopPropagation();
+      toggleAudioPlayback(item);
+    });
+
+    seek.addEventListener("mousedown", function (e) {
+      if (selectMode) return;
+      e.stopPropagation();
+      seeking = true;
+    });
+    seek.addEventListener("click", function (e) {
+      if (selectMode) return;
+      e.stopPropagation();
+    });
+    seek.addEventListener("input", function () {
+      if (selectMode) return; // 選択モード中はシークしない(トグルは click の bubble に任せる)
+      var duration = isFinite(audio.duration) ? audio.duration : 0;
+      if (duration <= 0) return;
+      audio.currentTime = (Number(seek.value) / 1000) * duration;
+      timeEl.textContent = formatAudioTime(audio.currentTime) + " / " + formatAudioTime(duration);
+    });
+    document.addEventListener("mouseup", function () { seeking = false; });
+
+    // 再生中は枠の色を変えて、離れていても分かるようにする(選択状態の青とは別の緑)
+    audio.addEventListener("play", function () { playBtn.textContent = "❚❚"; box.classList.add("playing"); });
+    audio.addEventListener("pause", function () { playBtn.textContent = "▶"; box.classList.remove("playing"); });
+    audio.addEventListener("ended", function () { box.classList.remove("playing"); });
+    audio.addEventListener("timeupdate", refreshSeekUI);
+    audio.addEventListener("loadedmetadata", function () {
+      refreshSeekUI();
+      onSettled();
+    });
+
+    audio.addEventListener("error", function () {
+      failedPaths.push(path);
+      item.broken = true;
+      // aspect は使わない(itemHeight() は audio を固定高さで返すため、broken でも AUDIO_CARD_HEIGHT のまま)
+      el.classList.add("error");
+      box.remove();
+      item.media = null;
+      item.audioBox = null;
+      var ph = document.createElement("div");
+      ph.className = "item-ph";
+      ph.textContent = "再生不可: " + basename(path);
+      item.ph = ph;
+      el.insertBefore(ph, label);
+      onSettled();
+    });
+
+    audio.src = toImgSrc(path);
+    el.appendChild(box);
+  }
+
+  function createItem(entry, index, onSettled) {
+    var path = entry.path;
+    var el = document.createElement("div");
+    el.className = "item";
+    // ラベルを指定していれば「ラベル\n絶対パス」、無指定ならパスだけ(表示中の basename は
+    // path に含まれているため、無指定時にわざわざ重ねて出す意味が無い)
+    el.title = entry.label ? entry.label + "\n" + path : path;
+
+    var kind = isAudioPath(path) ? "audio" : (isVideoPath(path) ? "video" : "image");
+
+    var item = {
+      el: el,
+      media: null,
+      audioBox: null,
+      ph: null,
+      kind: kind,
+      path: path,
+      index: index,
+      x: 0,
+      y: 0,
+      w: parseInt(gridSizeSlider.value, 10),
+      aspect: 1, // 音声は itemHeight() が固定値を返すため未使用。画像/動画は読み込み後に上書きされる
+      broken: false
+    };
+
+    var label = document.createElement("div");
+    label.className = "item-label";
+    label.textContent = entry.label || basename(path);
+
+    var check = document.createElement("div");
+    check.className = "item-check";
+    check.textContent = "✓"; // チェックマーク(選択時のみ濃色で見える)
+
+    if (kind === "audio") {
+      buildAudioCard(item, el, path, label, onSettled);
+    } else {
+      buildMediaCard(item, el, path, kind === "video", label, onSettled);
+    }
+
     el.appendChild(label);
     el.appendChild(check);
     attachItemInteractions(item);
@@ -812,17 +1202,37 @@
     return el;
   }
 
+  // board({sections:[{title?,note?,items:[{path,label?}]}]}) をランタイムの sections/items に変換する
+  function loadBoard(board) {
+    sections = [];
+    items = [];
+    failedPaths = [];
+    var rawSections = board && Array.isArray(board.sections) ? board.sections : [];
+    sections = rawSections.map(function (raw) {
+      return {
+        title: raw && raw.title,
+        note: raw && raw.note,
+        entries: (raw && Array.isArray(raw.items)) ? raw.items : [],
+        cards: [],
+        headingEl: null
+      };
+    });
+  }
+
   function renderCanvas() {
-    if (imagePaths.length === 0) {
+    var totalItems = sections.reduce(function (sum, s) { return sum + s.entries.length; }, 0);
+    if (totalItems === 0) {
       headerEl.style.display = "none";
       canvasEl.style.display = "none";
       emptyStateEl.style.display = "flex";
       return;
     }
 
-    imageCountEl.textContent = imagePaths.length + (imagePaths.length === 1 ? " image" : " images");
+    // 画像・動画・音声が混在しても種別を問わない表記にする(「15 images」のまま音声を含むと
+    // 誤解を招くため)。CLI 側の opened 行(images=<n>)とは独立の表示なので、そちらは変えない
+    imageCountEl.textContent = totalItems + (totalItems === 1 ? " item" : " items");
 
-    var pending = imagePaths.length;
+    var pending = totalItems;
     function settled() {
       pending--;
       if (pending === 0) {
@@ -832,11 +1242,21 @@
     }
 
     var fragment = document.createDocumentFragment();
-    imagePaths.forEach(function (path, index) {
-      fragment.appendChild(createItem(path, index, settled));
+    var flatIndex = 0;
+    sections.forEach(function (section) {
+      if (section.title || section.note) {
+        section.headingEl = createSectionHeading(section);
+        fragment.appendChild(section.headingEl);
+      }
+      section.entries.forEach(function (entry) {
+        var el = createItem(entry, flatIndex, settled);
+        section.cards.push(items[items.length - 1]);
+        fragment.appendChild(el);
+        flatIndex++;
+      });
     });
     canvasEl.appendChild(fragment);
-    layoutItems(); // 読み込み前の仮整列(aspect=1)。全画像 settle 後に再整列される
+    layoutItems(); // 読み込み前の仮整列(aspect=1)。全アイテム settle 後に再整列される
   }
 
   // ---------------- lightbox: geometry ----------------
@@ -905,25 +1325,46 @@
   }
 
   function updateLightboxInfo() {
-    var path = imagePaths[lightboxState.index];
+    var item = items[lightboxState.index];
     var dims = lightboxState.naturalW ? (lightboxState.naturalW + "×" + lightboxState.naturalH) : "…";
     var pct = Math.round(lightboxState.zoom * 100);
-    var sound = lightboxState.isVideo ? (lightboxState.soundOn ? "  🔊" : "  🔇") : "";
     lightboxInfoEl.textContent =
-      basename(path) + "  " + dims + "  " + pct + "%  (" + (lightboxState.index + 1) + "/" + imagePaths.length + ")" + sound;
+      basename(item.path) + "  " + dims + "  " + pct + "%  (" + (lightboxState.index + 1) + "/" + items.length + ")";
+    updateSoundToggleUI();
+  }
+
+  // 音の状態は #lightbox-info の文字列に混ぜず、独立した大きめのボタンで表示する
+  // (アイコン単体だと 11px では判別しづらいため、アイコン+ラベル+枠色の3つで示す)
+  function updateSoundToggleUI() {
+    if (!lightboxState.isVideo) {
+      lightboxSoundToggleBtn.style.display = "none";
+      return;
+    }
+    lightboxSoundToggleBtn.style.display = "flex";
+    lightboxSoundToggleBtn.classList.toggle("muted", !lightboxState.soundOn);
+    var icon = lightboxState.soundOn ? "🔊" : "🔇";
+    var label = lightboxState.soundOn ? "音あり" : "ミュート中";
+    lightboxSoundToggleBtn.textContent = "";
+    var iconEl = document.createElement("span");
+    iconEl.className = "lightbox-sound-icon";
+    iconEl.textContent = icon;
+    lightboxSoundToggleBtn.appendChild(iconEl);
+    lightboxSoundToggleBtn.appendChild(document.createTextNode(label));
   }
 
   function toggleLightboxSound() {
     if (!lightboxState.isVideo) return;
     lightboxState.soundOn = !lightboxState.soundOn;
+    if (lightboxState.soundOn) pauseAllAudioExcept(null); // ミュート解除で音が出る瞬間も同様に排他する
     lightboxVideo.muted = !lightboxState.soundOn;
     updateLightboxInfo();
   }
 
   // ---------------- lightbox: open / navigate / close ----------------
   function loadLightboxImage() {
-    var path = imagePaths[lightboxState.index];
-    var isVideo = isVideoPath(path);
+    var item = items[lightboxState.index];
+    var path = item.path;
+    var isVideo = item.kind === "video";
     lightboxState.isVideo = isVideo;
     lightboxState.naturalW = 0;
     lightboxState.naturalH = 0;
@@ -956,6 +1397,9 @@
       // ライトテーブル上の動画は全部ミュート(複数同時に鳴るとうるさい)。音はライトボックスで
       // 1 本ずつ出す。ライトボックスはクリック(ユーザー操作)で開くので音あり再生が許可される。
       // m でミュート切替(lightboxState.soundOn は次の動画にも引き継ぐ)
+      // 音あり再生になるときは、再生中の音声カードと二重に鳴らないよう先に止める
+      // (同時に鳴るのは1本だけ、という既存方針をライトボックス動画にも広げる)
+      if (lightboxState.soundOn) pauseAllAudioExcept(null);
       lightboxVideo.muted = !lightboxState.soundOn;
       var playPromise = lightboxVideo.play();
       if (playPromise && playPromise.catch) {
@@ -1000,10 +1444,17 @@
     lightboxVideo.load();
   }
 
+  // 音声アイテムは飛ばす(音声はライトボックスで扱わない)
   function navigateLightbox(delta) {
-    var n = imagePaths.length;
+    var n = items.length;
     if (n <= 1) return;
-    lightboxState.index = (lightboxState.index + delta + n) % n;
+    var next = lightboxState.index;
+    for (var i = 0; i < n; i++) {
+      next = (next + delta + n) % n;
+      if (items[next].kind !== "audio") break;
+    }
+    if (next === lightboxState.index) return; // 音声以外が他に無い(自分自身に戻ってきた)
+    lightboxState.index = next;
     loadLightboxImage();
   }
 
@@ -1058,6 +1509,11 @@
     applyZoomAtPoint(lightboxState.zoom * factor, e.clientX, e.clientY);
   }, { passive: false });
 
+  lightboxSoundToggleBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    toggleLightboxSound();
+  });
+
   lightboxCloseBtn.addEventListener("click", closeLightbox);
 
   // ---------------- keyboard shortcuts ----------------
@@ -1102,8 +1558,8 @@
   document.addEventListener("keydown", onKeyDown);
 
   // ---------------- launcher bridge ----------------
-  // __moodboardReady / __moodboardPoll は moodboard.ts が webview.bind で注入する。
-  // http 経由の検証用ページには無いので、その場合は何もしない
+  // __moodboardLoad / __moodboardReady / __moodboardPoll は moodboard.ts が webview.bind で注入する。
+  // http 経由の検証用ページでは、検証スクリプトが exposeFunction / addInitScript で同名のものを注入する
   function notifyLauncherReady() {
     var requestId = new URLSearchParams(window.location.search).get("rid");
     if (requestId && typeof window.__moodboardReady === "function") {
@@ -1111,7 +1567,7 @@
     }
   }
 
-  // 同名 target への差し替え要求を受け取り、新しい画像一覧のページに置き換える
+  // 同名 target への差し替え要求を受け取り、新しい board のページに置き換える
   function startReplacePolling() {
     if (typeof window.__moodboardPoll !== "function") return;
     setInterval(function () {
@@ -1121,11 +1577,36 @@
     }, REPLACE_POLL_MS);
   }
 
+  // __moodboardLoad が失敗したときの表示。「board を渡さず開いた(本当に空)」の #empty-state とは
+  // 別にする。ランチャー側のタイムアウト後始末の変更で、窓が受け取り済みの board ファイルは
+  // タイムアウトでは消さない方針にしたが、それでも state ディレクトリの競合や rid 不一致などで
+  // 読み込みに失敗することはあり得るので、その場合はここで「失敗した」とはっきり示す
+  // (方針: moodboard.ts の showBoard/sweepStaleFiles のコメント参照)
+  function renderLoadError() {
+    headerEl.style.display = "none";
+    canvasEl.style.display = "none";
+    emptyStateEl.style.display = "none";
+    loadErrorStateEl.style.display = "flex";
+  }
+
   // ---------------- init ----------------
   function init() {
     setBaseSize(parseInt(gridSizeSlider.value, 10));
-    renderCanvas();
     startReplacePolling();
+
+    var rid = new URLSearchParams(window.location.search).get("rid");
+    if (rid && typeof window.__moodboardLoad === "function") {
+      window.__moodboardLoad(rid).then(function (board) {
+        loadBoard(board);
+        renderCanvas();
+      }, function (err) {
+        console.error("moodboard: board の読み込みに失敗しました", err);
+        renderLoadError();
+      });
+    } else {
+      loadBoard(null);
+      renderCanvas();
+    }
   }
 
   init();

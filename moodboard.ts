@@ -3,13 +3,19 @@
 // file:// のクエリも別ディレクトリの画像読み込みも WKWebView 上で通ることは実測済み。
 //
 // 使い方:
-//   moodboard [--target <名前>] <画像パス...>   開く。同名ウィンドウがあれば中身を差し替える
+//   moodboard [--target <名前>] <画像/動画/音声パス...>   開く。同名ウィンドウがあれば中身を差し替える
+//   moodboard [--target <名前>] --json <board.json>       セクション分割・ラベル付きの board を開く
 //   moodboard --close <名前>                     その名前のウィンドウだけ閉じる
 //   moodboard --list                             開いている名前付きウィンドウを出す
 //
-// ランチャーはウィンドウ用の子プロセスを別セッション(detached)で起動し、ページが全画像の読み込みを
+// パス列挙は「見出しなし・ラベルなしの 1 セクション」の board に変換され、--json と同じ経路(下記)で渡る。
+// board(見出し・説明・パス・ラベル)は URL クエリに載せない。/tmp/moodboard-<uid>/boards/<rid>.json に
+// 書き、URL には rid だけを渡してページ側の __moodboardLoad(rid) に読ませる(長い note や大量のパスが
+// URL 長の上限に当たらないようにするため)。
+//
+// ランチャーはウィンドウ用の子プロセスを別セッション(detached)で起動し、ページが全アイテムの読み込みを
 // 終えた通知(ack)を受けてから終了する。終了コードで「本当に開けたか」が分かる:
-//   0 = 表示済み / 1 = 引数・対象の誤り / 2 = 時間内に表示されなかった / 3 = 読み込めない画像があった
+//   0 = 表示済み / 1 = 引数・board JSON・パスの誤り / 2 = 時間内に表示されなかった / 3 = 読み込めないアイテムがあった
 //
 // 同名ウィンドウへの差し替えは、ページ側が bind した __moodboardPoll を定期的に呼び、
 // ランチャーが置いた要求ファイルを受け取って location.replace する。webview.run() の間は
@@ -29,10 +35,27 @@ const STATE_DIR = `/tmp/moodboard-${USER_ID}`;
 const TARGETS_DIR = join(STATE_DIR, "targets");
 const ACKS_DIR = join(STATE_DIR, "acks");
 const LOGS_DIR = join(STATE_DIR, "logs");
+// board(見出し・説明・パス・ラベル)の置き場。後始末の方針:
+//   - 表示ごとに <rid>.json を書き、ページの __moodboardLoad(rid) が読んだ直後に消す(runWindow 内)
+//   - 表示確認(ack)がタイムアウトした場合、showBoard は「窓がまだ受け取っていない」ときだけそのファイルを
+//     消す(差し替え要求なら、request ファイルがまだ残っている = __moodboardPoll がまだ拾っていない、が
+//     判定基準。新規窓は request ファイルという概念が無いので無条件)。窓が既に受け取って読み込み中の
+//     可能性があるときは消さず、窓自身の __moodboardLoad に任せる。ここで消してしまうと、窓の読み込みが
+//     このタイムアウトより少し遅れただけのケースで board が無くなって読み込みに失敗し、空表示に固着した
+//     まま ack も二度と来なくなる(実害。詳細は showBoard 内のコメント参照)
+//   - ウィンドウが閉じた時点でも最初の board が一度も読まれていなければ runWindow の終わりで消す
+//     (差し替えで読み込んだ後続の board は、その都度 __moodboardLoad が読み終えた時点で消えている)
+//   - 上記のどれにも当たらず残ったもの(窓が本当に死んでいた等)は、次回ランチャー起動時に
+//     sweepStaleFiles() が古いものとして掃除する(acks/ も同様)
+const BOARDS_DIR = join(STATE_DIR, "boards");
 const READY_TIMEOUT_MS = 20_000;
 const ACK_POLL_MS = 100;
 // 前の起動が受領待ち(最大 READY_TIMEOUT_MS)を終えるまで待てる長さ
 const LOCK_WAIT_MS = READY_TIMEOUT_MS + 5_000;
+// boards/ と acks/ の掃除しきい値。要求は通常 READY_TIMEOUT_MS 以内に決着する(受領されて
+// __moodboardLoad/__moodboardReady が消すか、タイムアウト処理が消す)。この数倍より古く残っている
+// ファイルは、窓のクラッシュ等で誰にも読まれる見込みがないとみなして良い
+const STALE_FILE_MS = READY_TIMEOUT_MS * 5;
 const TARGET_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -40,6 +63,14 @@ const htmlPath = resolve(dirname(scriptPath), "moodboard.html");
 
 type WindowConfig = { target: string | null; url: string; requestId: string };
 type Ack = { pid: number; failedPaths: string[] };
+
+// board JSON の型。詳細な形式・検証ルールは README.md の「Board JSON」節を正とする。
+type BoardItem = { path: string; label?: string };
+type BoardSection = { title?: string; note?: string; items: BoardItem[] };
+type Board = { sections: BoardSection[] };
+
+const SECTION_KEYS = new Set(["title", "note", "items"]);
+const ITEM_KEYS = new Set(["path", "label"]);
 
 await main(process.argv.slice(2));
 
@@ -58,25 +89,113 @@ async function main(argv: string[]) {
     return;
   }
 
+  // 窓を開く/差し替えるたびに、boards/ と acks/ に残っている古いファイルを掃除する
+  sweepStaleFiles();
+
   let target: string | null = null;
-  let files = argv;
+  let rest = argv;
   if (argv[0] === "--target") {
     target = requireTargetName(argv[1]);
-    files = argv.slice(2);
+    rest = argv.slice(2);
   }
-  if (files.length === 0) usageError("画像パスがありません");
-  process.exit(await openImages({ target, files }));
+  const board = checkedBoard(buildBoard(rest));
+  process.exit(await openBoard({ target, board }));
 }
 
-async function openImages(request: { target: string | null; files: string[] }): Promise<number> {
-  const absolutePaths = request.files.map((p) => resolve(p));
-  const missing = absolutePaths.filter((p) => !existsSync(p));
-  if (missing.length > 0) {
-    console.error("存在しないパス:\n" + missing.join("\n"));
-    return 1;
-  }
+// ---------------- board の組み立て・検証 ----------------
 
-  if (request.target === null) return await showImages({ target: null, absolutePaths });
+function buildBoard(rest: string[]): Board {
+  if (rest[0] === "--json") {
+    if (rest.length !== 2) usageError("--json は board JSON ファイルのパスを1つだけ取ります");
+    return readBoardJson(rest[1]);
+  }
+  if (rest.includes("--json")) usageError("--json とパス列挙は併用できません");
+  if (rest.length === 0) usageError("画像/動画/音声パスがありません");
+  return boardFromPaths(rest);
+}
+
+// 既存の「パスを並べるだけ」の呼び方は、見出しなし・ラベルなしの 1 セクションに変換して同じ経路で渡す
+function boardFromPaths(paths: string[]): Board {
+  return { sections: [{ items: paths.map((p) => ({ path: resolve(p) })) }] };
+}
+
+function readBoardJson(jsonPath: string): Board {
+  const absJsonPath = resolve(jsonPath);
+  if (!existsSync(absJsonPath)) fatal(`--json のファイルが見つかりません: ${jsonPath}`);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(absJsonPath, "utf8"));
+  } catch (error) {
+    fatal(`--json の内容が不正な JSON です: ${(error as Error).message}`);
+  }
+  return validateBoard(raw, dirname(absJsonPath));
+}
+
+// 未知のキー・型違い・空配列を全部拒否する。相対パスは baseDir(JSON ファイルのディレクトリ)基準で
+// 絶対パスに解決する(存在チェックは呼び出し元の checkedBoard で行う)
+function validateBoard(raw: unknown, baseDir: string): Board {
+  const obj = asRecord(raw, "board JSON");
+  const unknown = Object.keys(obj).filter((k) => k !== "sections");
+  if (unknown.length > 0) fatal(`board JSON に未知のキーがあります: ${unknown.join(", ")}`);
+  if (!Array.isArray(obj.sections) || obj.sections.length === 0) {
+    fatal("board JSON の sections は空でない配列である必要があります");
+  }
+  const sections = obj.sections.map((s, i) => validateSection(s, i, baseDir));
+  return { sections };
+}
+
+function validateSection(raw: unknown, index: number, baseDir: string): BoardSection {
+  const prefix = `sections[${index}]`;
+  const obj = asRecord(raw, prefix);
+  const unknown = Object.keys(obj).filter((k) => !SECTION_KEYS.has(k));
+  if (unknown.length > 0) fatal(`${prefix} に未知のキーがあります: ${unknown.join(", ")}`);
+  const title = optionalString(obj, "title", `${prefix}.title`);
+  const note = optionalString(obj, "note", `${prefix}.note`);
+  if (!Array.isArray(obj.items) || obj.items.length === 0) {
+    fatal(`${prefix}.items は空でない配列である必要があります`);
+  }
+  const items = obj.items.map((it, j) => validateItem(it, index, j, baseDir));
+  return { title, note, items };
+}
+
+function validateItem(raw: unknown, sectionIndex: number, itemIndex: number, baseDir: string): BoardItem {
+  const prefix = `sections[${sectionIndex}].items[${itemIndex}]`;
+  const obj = asRecord(raw, prefix);
+  const unknown = Object.keys(obj).filter((k) => !ITEM_KEYS.has(k));
+  if (unknown.length > 0) fatal(`${prefix} に未知のキーがあります: ${unknown.join(", ")}`);
+  if (typeof obj.path !== "string" || obj.path.length === 0) {
+    fatal(`${prefix}.path は空でない string である必要があります`);
+  }
+  const label = optionalString(obj, "label", `${prefix}.label`);
+  return { path: resolve(baseDir, obj.path), label };
+}
+
+function asRecord(raw: unknown, label: string): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fatal(`${label} はオブジェクトである必要があります`);
+  return raw as Record<string, unknown>;
+}
+
+function optionalString(obj: Record<string, unknown>, key: string, label: string): string | undefined {
+  if (!(key in obj)) return undefined;
+  if (typeof obj[key] !== "string") fatal(`${label} は string である必要があります`);
+  return obj[key] as string;
+}
+
+// 型・構造の検証を通った board に対して、パスの実在だけを確かめる(JSON・パス列挙の両方で共通)
+function checkedBoard(board: Board): Board {
+  const missing = board.sections.flatMap((s) => s.items.map((it) => it.path)).filter((p) => !existsSync(p));
+  if (missing.length > 0) fatal("存在しないパス:\n" + missing.join("\n"));
+  return board;
+}
+
+function countItems(board: Board): number {
+  return board.sections.reduce((sum, s) => sum + s.items.length, 0);
+}
+
+// ---------------- ウィンドウの表示 ----------------
+
+async function openBoard(request: { target: string | null; board: Board }): Promise<number> {
+  if (request.target === null) return await showBoard({ target: null, board: request.board });
 
   // 同じ名前への起動が重なると、両方が「未オープン」と判断して窓が 2 つ開き、片方が pid ファイルから
   // 外れて閉じられなくなる。名前ごとのロックで確認〜受領待ちを直列にする
@@ -87,17 +206,18 @@ async function openImages(request: { target: string | null; files: string[] }): 
     return 2;
   }
   try {
-    return await showImages({ target, absolutePaths });
+    return await showBoard({ target, board: request.board });
   } finally {
     rmSync(lockPath(target), { recursive: true, force: true });
   }
 }
 
-async function showImages(request: { target: string | null; absolutePaths: string[] }): Promise<number> {
-  const absolutePaths = request.absolutePaths;
+async function showBoard(request: { target: string | null; board: Board }): Promise<number> {
   const requestId = randomUUID();
-  const url = buildUrl({ absolutePaths, requestId });
+  writeBoardFile(requestId, request.board);
+  const url = buildUrl(requestId);
   const label = request.target ?? "(名前なし)";
+  const itemCount = countItems(request.board);
   const existingPid = request.target === null ? null : findWindowPid(request.target);
 
   let child: ReturnType<typeof spawn> | null = null;
@@ -119,14 +239,29 @@ async function showImages(request: { target: string | null; absolutePaths: strin
   const ack = await waitForAck({ requestId, child });
   const action = existingPid !== null ? "差し替え" : "新規";
   if (ack === null) {
-    // 受け取られなかった差し替え要求を残すと、後で古い画像一覧に置き換わってしまう
-    if (request.target !== null) rmSync(requestPath(request.target), { force: true });
+    // タイムアウト時の後始末は「窓がまだ受け取っていない」ときだけ行う。差し替え要求(request
+    // ファイル)は __moodboardPoll が読んだ瞬間に窓自身が消すため、まだ存在していれば窓は
+    // まだ location.replace を始めておらず、request・board とも誰にも読まれる見込みがない
+    // (安全に消せる)。既に消えている(=窓が受け取り済みで読み込み中の可能性がある)場合、
+    // ここで board まで消すと、窓の読み込みがこのタイムアウトより少し遅れただけのケースで
+    // __moodboardLoad が失敗し、空表示に固着したまま ack も二度と来なくなる(実害)。その場合は
+    // 窓自身の __moodboardLoad が読み終え次第 board を消すのに任せ、本当に窓が死んでいた場合の
+    // 後始末は次回起動時の sweepStaleFiles() に任せる。新規窓(request ファイルの概念が無い)は
+    // 従来どおりここで board を消す
+    if (existingPid !== null && request.target !== null) {
+      if (existsSync(requestPath(request.target))) {
+        rmSync(requestPath(request.target), { force: true });
+        rmSync(boardPath(requestId), { force: true });
+      }
+    } else {
+      rmSync(boardPath(requestId), { force: true });
+    }
     console.error(`表示を確認できませんでした (target=${label}, ${action})` + (logPath ? `\nlog: ${logPath}` : ""));
     return 2;
   }
-  console.log(`opened target=${label} pid=${ack.pid} ${action} images=${absolutePaths.length}`);
+  console.log(`opened target=${label} pid=${ack.pid} ${action} images=${itemCount}`);
   if (ack.failedPaths.length > 0) {
-    console.error("読み込めなかった画像:\n" + ack.failedPaths.join("\n"));
+    console.error("読み込めなかったアイテム:\n" + ack.failedPaths.join("\n"));
     return 3;
   }
   return 0;
@@ -159,6 +294,12 @@ function runWindow(config: WindowConfig) {
   webview.size = { width: 1280, height: 900, hint: SizeHint.NONE };
 
   // run() 中は Bun のイベントループが止まるため、callback は同期 I/O だけで書く
+  webview.bind("__moodboardLoad", (rid: string) => {
+    const path = boardPath(rid);
+    const board = JSON.parse(readFileSync(path, "utf8"));
+    rmSync(path, { force: true }); // 読み終えたら即消す(boards/ を溜めない)
+    return board;
+  });
   webview.bind("__moodboardReady", (requestId: string, failedPaths: string[]) => {
     writeFileSync(ackPath(requestId), JSON.stringify({ pid: process.pid, failedPaths } satisfies Ack));
   });
@@ -173,6 +314,10 @@ function runWindow(config: WindowConfig) {
 
   webview.navigate(config.url);
   webview.run(); // ウィンドウを閉じると返る
+
+  // 最初の board が一度も読まれないまま(表示確認前に閉じられた等)窓が終わった場合の掃除。
+  // 差し替えで読み込んだ board はそれぞれ __moodboardLoad が読み終えた時点で既に消えている
+  rmSync(boardPath(config.requestId), { force: true });
 
   if (config.target !== null && readPid(config.target) === process.pid) rmSync(pidPath(config.target));
 }
@@ -229,7 +374,7 @@ function ensureStateDir() {
     console.error(`${STATE_DIR} が自分の所有する権限 700 のディレクトリではありません。中身を確かめて削除してください`);
     process.exit(1);
   }
-  for (const dir of [TARGETS_DIR, ACKS_DIR, LOGS_DIR]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const dir of [TARGETS_DIR, ACKS_DIR, LOGS_DIR, BOARDS_DIR]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 // mkdir の原子性でロックを取る。持ち主が kill されて残ったロックは、待ち時間を超えていれば奪う
@@ -249,6 +394,25 @@ async function acquireTargetLock(target: string): Promise<boolean> {
   return false;
 }
 
+// ランチャー起動(窓を開く/差し替える呼び出し)のたびに、boards/ と acks/ に残っている古いファイルを
+// 掃除する。通常はそれぞれの読み手(__moodboardLoad・waitForAck)が消すが、タイムアウト時に「窓が
+// 受け取り済みなら board を消さない」方針(showBoard 参照)にしたぶん、窓が本当に死んでいた場合は
+// 拾われずに残り続けるため、ここで一括して掃除する
+function sweepStaleFiles(): void {
+  const deadline = Date.now() - STALE_FILE_MS;
+  for (const dir of [BOARDS_DIR, ACKS_DIR]) {
+    for (const file of readdirSync(dir)) {
+      const path = join(dir, file);
+      try {
+        if (statSync(path).mtimeMs < deadline) rmSync(path, { force: true });
+      } catch (error) {
+        // 掃除中に他プロセス(その rid の本来の読み手)が読んで消した場合は無視する
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      }
+    }
+  }
+}
+
 function readPid(target: string): number | null {
   const path = pidPath(target);
   if (!existsSync(path)) return null;
@@ -256,15 +420,9 @@ function readPid(target: string): number | null {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
-function buildUrl(params: { absolutePaths: string[]; requestId: string }): string {
-  return (
-    "file://" +
-    htmlPath.split("/").map(encodeURIComponent).join("/") +
-    "?rid=" +
-    params.requestId +
-    "&f=" +
-    params.absolutePaths.map(encodeURIComponent).join("&f=")
-  );
+// board(見出し・説明・パス・ラベル)は載せない。ページはこの rid を渡して __moodboardLoad(rid) を呼ぶ
+function buildUrl(requestId: string): string {
+  return "file://" + htmlPath.split("/").map(encodeURIComponent).join("/") + "?rid=" + requestId;
 }
 
 function requireTargetName(name: string | undefined): string {
@@ -275,9 +433,13 @@ function requireTargetName(name: string | undefined): string {
 }
 
 function usageError(message: string): never {
-  console.error(
-    `${message}\nusage: moodboard [--target <名前>] <画像パス...>\n       moodboard --close <名前>\n       moodboard --list`,
+  fatal(
+    `${message}\nusage: moodboard [--target <名前>] <画像/動画/音声パス...>\n       moodboard [--target <名前>] --json <board.json>\n       moodboard --close <名前>\n       moodboard --list`,
   );
+}
+
+function fatal(message: string): never {
+  console.error(message);
   process.exit(1);
 }
 
@@ -295,4 +457,12 @@ function lockPath(target: string) {
 
 function ackPath(requestId: string) {
   return join(ACKS_DIR, `${requestId}.json`);
+}
+
+function boardPath(requestId: string) {
+  return join(BOARDS_DIR, `${requestId}.json`);
+}
+
+function writeBoardFile(requestId: string, board: Board): void {
+  writeFileSync(boardPath(requestId), JSON.stringify(board));
 }
