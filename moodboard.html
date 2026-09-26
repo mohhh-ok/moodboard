@@ -28,7 +28,7 @@
   その場合 __moodboardLoad / __moodboardReady / __moodboardPoll はホスト側(検証スクリプト)が
   page.exposeFunction 等で注入する。
 -->
-<html lang="ja" data-bg="dark">
+<html lang="en" data-bg="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -77,6 +77,14 @@
       linear-gradient(-45deg, transparent 75%, #999 75%);
     background-size: 20px 20px;
     background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  }
+
+  /* 市松・白の背景ではキャンバス上の文字(セクション見出し・説明・カードのラベル)が明るい灰色のままだと
+     読めないので、濃い色に切り替える。ヘッダー・ライトボックスの文字は背景が変わらないので対象外 */
+  html[data-bg="checker"],
+  html[data-bg="white"] {
+    --canvas-fg: #111;
+    --canvas-fg-dim: #333;
   }
 
   /* ---------------- header ---------------- */
@@ -145,14 +153,27 @@
   /* 省略記号(ellipsis)で切り詰めない: 内容は操作の説明でありユーザーが読めることが必須。
      flex-basis を確保しつつ min-width:0 で縮められるようにし、収まらない分は
      white-space:normal で折り返す(必要なら #header の flex-wrap で2段目に丸ごと落ちる) */
+  /* min-width は、これより狭くしか取れないとき(狭い窓・選択モードでボタンが増えたとき)に
+     ヒントを #header の 2 段目へ丸ごと落とし、ボタンの横で細長く何行にも折り返さないための値 */
   #shortcuts-hint {
-    flex: 1 1 260px;
-    min-width: 160px;
+    flex: 1 1 420px;
+    min-width: 420px;
     color: var(--fg-dim);
     text-align: left;
     font-size: 11px;
     line-height: 1.7;
     white-space: normal;
+  }
+  /* inline-block 同士の間は空白なしでも折り返せる。間隔は margin だけで取る */
+  #shortcuts-hint .hint-item {
+    display: inline-block;
+    white-space: nowrap;
+    margin-right: 0.75em;
+  }
+  /* まとまりの区切りは余白だけで示す(縦線にすると、折り返して行頭に来たとき線だけが浮く) */
+  #shortcuts-hint .hint-group {
+    display: inline-block;
+    margin-right: 1.8em;
   }
   body.selecting #shortcuts-hint .hint-default { display: none; }
   #shortcuts-hint .hint-select { display: none; }
@@ -175,12 +196,12 @@
   .section-title {
     font-size: 15px;
     font-weight: 600;
-    color: var(--fg);
+    color: var(--canvas-fg, var(--fg));
     margin-bottom: 4px;
   }
   .section-note {
     font-size: 12px;
-    color: var(--fg-dim);
+    color: var(--canvas-fg-dim, var(--fg-dim));
     white-space: pre-wrap; /* 改行保持 */
     line-height: 1.6;
   }
@@ -320,6 +341,11 @@
   body.selecting .item .audio-time {
     padding-left: 24px;
   }
+  /* 読み込めなかったカード(.item-ph)の文言も同じ理由でチェックボックスに先頭が隠れていた
+     (「Can't play」が「t play」と読める)。チェックボックスの右端 28px + 余白ぶん文字を右に寄せる */
+  body.selecting .item .item-ph {
+    padding-left: 34px;
+  }
 
   .item-ph {
     width: 100%;
@@ -342,7 +368,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 11px;
-    color: var(--fg-dim);
+    color: var(--canvas-fg-dim, var(--fg-dim));
     pointer-events: none;
   }
 
@@ -485,44 +511,35 @@
 <body>
 
   <div id="header">
-    <span id="image-count">0 items</span>
+    <span id="image-count"></span>
     <span id="grid-size-control">
-      <label for="grid-size-slider">size</label>
+      <label for="grid-size-slider" data-i18n="sizeLabel"></label>
       <input type="range" id="grid-size-slider" min="120" max="640" step="10" value="220">
       <span id="grid-size-label">220px</span>
     </span>
-    <button id="bg-toggle" type="button">背景: ダーク</button>
-    <button id="select-toggle" class="hdr-btn" type="button">選択</button>
-    <button id="select-all" class="hdr-btn select-only" type="button">全選択</button>
-    <button id="select-clear" class="hdr-btn select-only" type="button">解除</button>
-    <button id="copy-selected" class="hdr-btn select-only" type="button" disabled>コピー (0)</button>
+    <button id="bg-toggle" type="button"></button>
+    <button id="select-toggle" class="hdr-btn" type="button" data-i18n="select"></button>
+    <button id="select-all" class="hdr-btn select-only" type="button" data-i18n="selectAll"></button>
+    <button id="select-clear" class="hdr-btn select-only" type="button" data-i18n="selectClear"></button>
+    <button id="copy-selected" class="hdr-btn select-only" type="button" disabled></button>
     <span id="copy-status" class="select-only" style="color: var(--fg-dim); font-size: 11px;"></span>
     <span id="shortcuts-hint">
-      <span class="hint-default">wheel=サイズ drag=移動 click=拡大表示 r=再整列 b=背景 s=選択 +/-=基準サイズ &nbsp;|&nbsp; lightbox: 0=fit 1=100% 2=200% ←/→=前後 m=音 Esc=閉じる</span>
-      <span class="hint-select">クリック=選択 &nbsp;⌘A=全選択 &nbsp;⌘C=コピー &nbsp;s か Esc=抜ける</span>
+      <span class="hint-default" data-hint="hintDefault"></span>
+      <span class="hint-select" data-hint="hintSelect"></span>
     </span>
   </div>
 
   <div id="canvas"></div>
 
   <div id="empty-state">
-    <h1>moodboard — 表示するアイテムがありません</h1>
-    <p>
-      moodboard コマンド経由で開いてください。画像・動画(mov/webm/mp4)・音声(wav/mp3/m4a/aac/flac/ogg/opus)を渡せます。
-    </p>
-    <pre>moodboard [--target &lt;名前&gt;] &lt;パス...&gt;
-moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
-
-注意: open "file://...?クエリ" は macOS がクエリを落とすので不可。
-手順の正は README.md</pre>
+    <h1 data-i18n="emptyTitle"></h1>
+    <p data-i18n="emptyBody"></p>
+    <pre data-i18n="emptyUsage"></pre>
   </div>
 
   <div id="load-error-state">
-    <h1>moodboard — 表示データの読み込みに失敗しました</h1>
-    <p>
-      board の読み込み中にエラーが発生しました(タイムアウトや状態ファイルの競合など)。
-      このウィンドウを閉じ、moodboard コマンドをもう一度実行してください。
-    </p>
+    <h1 data-i18n="loadErrorTitle"></h1>
+    <p data-i18n="loadErrorBody"></p>
   </div>
 
   <div id="lightbox">
@@ -532,8 +549,8 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
       <div id="lightbox-error"></div>
     </div>
     <div id="lightbox-info"></div>
-    <button id="lightbox-sound-toggle" type="button" title="音声のオン/オフ切り替え (m)"></button>
-    <button id="lightbox-close" type="button" title="閉じる (Esc)">&times;</button>
+    <button id="lightbox-sound-toggle" type="button" data-i18n-title="soundToggleTitle"></button>
+    <button id="lightbox-close" type="button" data-i18n-title="closeTitle">&times;</button>
   </div>
 
 <script>
@@ -547,7 +564,72 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
   var REPLACE_POLL_MS = 500; // 同名 target への差し替え要求を見に行く間隔
   var RESIZE_DEBOUNCE_MS = 200; // window resize 連続発火(リサイズ中に大量に飛ぶ)を間引く間隔
   var BG_STATES = ["dark", "checker", "white"];
-  var BG_LABELS = { dark: "ダーク", checker: "市松", white: "白" };
+
+  // ---------------- 表示言語 ----------------
+  // 画面の文字列はすべてここから引く。言語は moodboard.ts が URL の lang に入れる(macOS の言語設定・
+  // --lang・MOODBOARD_LANG から決める。決め方の正は README.md の「Language」節)。lang が無い
+  // (http 経由の検証ページ)ときは navigator.language で決める。ja 以外は en
+  var STRINGS = {
+    en: {
+      background: function (state) { return "Background: " + { dark: "Dark", checker: "Checker", white: "White" }[state]; },
+      itemCount: function (n) { return n + (n === 1 ? " item" : " items"); },
+      sizeLabel: "Size",
+      select: "Select",
+      selecting: "Selecting",
+      selectAll: "Select all",
+      selectClear: "Clear",
+      copy: function (n) { return "Copy (" + n + ")"; },
+      copied: function (n) { return "Copied " + n; },
+      copyFailed: "Copy failed",
+      hintDefault: ["wheel=size", "drag=move", "click=open", "r=re-layout", "b=background", "s=select", "+/-=base size", "|", "lightbox: 0=fit", "1=100%", "2=200%", "←/→=prev/next", "m=sound", "Esc=close"],
+      hintSelect: ["click=select", "⌘A=select all", "⌘C=copy", "s or Esc=exit"],
+      emptyTitle: "moodboard — nothing to show",
+      emptyBody: "Open this page with the moodboard command. It takes images, videos (mov/webm/mp4) and audio (wav/mp3/m4a/aac/flac/ogg/opus).",
+      emptyUsage: "moodboard [--target <name>] <paths...>\nmoodboard [--target <name>] --json <board.json>\n\nNote: open \"file://...?query\" does not work because macOS drops the query.\nSee README.md for how to open it",
+      loadErrorTitle: "moodboard — failed to load the files to show",
+      loadErrorBody: "An error occurred while loading the board (a timeout, a conflict in the state files, etc.). Close this window and run the moodboard command again.",
+      soundToggleTitle: "Sound on/off (m)",
+      closeTitle: "Close (Esc)",
+      cannotPlay: function (name) { return "Can't play: " + name; },
+      loadFailed: function (path) { return "Failed to load: " + path; },
+      playPause: "Play / pause",
+      seek: "Seek",
+      soundOn: "Sound on",
+      muted: "Muted"
+    },
+    ja: {
+      background: function (state) { return "背景: " + { dark: "ダーク", checker: "市松", white: "白" }[state]; },
+      itemCount: function (n) { return n + " 件"; },
+      sizeLabel: "サイズ",
+      select: "選択",
+      selecting: "選択中",
+      selectAll: "全選択",
+      selectClear: "解除",
+      copy: function (n) { return "コピー (" + n + ")"; },
+      copied: function (n) { return n + " 件コピー"; },
+      copyFailed: "コピー失敗",
+      hintDefault: ["wheel=サイズ", "drag=移動", "click=拡大表示", "r=再整列", "b=背景", "s=選択", "+/-=基準サイズ", "|", "lightbox: 0=fit", "1=100%", "2=200%", "←/→=前後", "m=音", "Esc=閉じる"],
+      hintSelect: ["クリック=選択", "⌘A=全選択", "⌘C=コピー", "s か Esc=抜ける"],
+      emptyTitle: "moodboard — 表示するアイテムがありません",
+      emptyBody: "moodboard コマンド経由で開いてください。画像・動画(mov/webm/mp4)・音声(wav/mp3/m4a/aac/flac/ogg/opus)を渡せます。",
+      emptyUsage: "moodboard [--target <名前>] <パス...>\nmoodboard [--target <名前>] --json <board.json>\n\n注意: open \"file://...?クエリ\" は macOS がクエリを落とすので不可。\n手順の正は README.md",
+      loadErrorTitle: "moodboard — 表示データの読み込みに失敗しました",
+      loadErrorBody: "board の読み込み中にエラーが発生しました(タイムアウトや状態ファイルの競合など)。このウィンドウを閉じ、moodboard コマンドをもう一度実行してください。",
+      soundToggleTitle: "音声のオン/オフ切り替え (m)",
+      closeTitle: "閉じる (Esc)",
+      cannotPlay: function (name) { return "再生不可: " + name; },
+      loadFailed: function (path) { return "読み込めません: " + path; },
+      playPause: "再生 / 一時停止",
+      seek: "シーク",
+      soundOn: "音あり",
+      muted: "ミュート中"
+    }
+  };
+  var LANG = (function () {
+    var requested = new URLSearchParams(window.location.search).get("lang") || navigator.language || "";
+    return requested.toLowerCase().indexOf("ja") === 0 ? "ja" : "en";
+  })();
+  var S = STRINGS[LANG];
   // 音声カードは画像・動画と違って「自然な視覚サイズ」を持たない(mediaWidth は常に0)。
   // 高さは操作 UI(ボタン+シークバー行・時間表示・上下 padding)がちょうど収まる固定値にし、
   // 基準サイズ・ホイールでは幅だけが変わるようにする(高さ比例だと空白の箱になるため)。
@@ -680,7 +762,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
     bgIndex = (bgIndex + 1) % BG_STATES.length;
     var state = BG_STATES[bgIndex];
     document.documentElement.setAttribute("data-bg", state);
-    bgToggleBtn.textContent = "背景: " + BG_LABELS[state];
+    bgToggleBtn.textContent = S.background(state);
   }
 
   bgToggleBtn.addEventListener("click", cycleBackground);
@@ -709,7 +791,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
     selectMode = !!on;
     document.body.classList.toggle("selecting", selectMode);
     selectToggleBtn.classList.toggle("active", selectMode);
-    selectToggleBtn.textContent = selectMode ? "選択中" : "選択";
+    selectToggleBtn.textContent = selectMode ? S.selecting : S.select;
     if (!selectMode) {
       selected.clear();
       items.forEach(function (it) { it.el.classList.remove("selected"); });
@@ -744,7 +826,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
 
   function updateCopyButton() {
     var n = selected.size;
-    copySelectedBtn.textContent = "コピー (" + n + ")";
+    copySelectedBtn.textContent = S.copy(n);
     copySelectedBtn.disabled = n === 0;
   }
 
@@ -765,7 +847,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
       if (selected.has(i)) paths.push(it.path);
     });
     var text = paths.join("\n");
-    var done = function () { flashCopyStatus(paths.length + " 件コピー"); };
+    var done = function () { flashCopyStatus(S.copied(paths.length)); };
     var fail = function () {
       // フォールバック: 隠し textarea 経由の execCommand
       try {
@@ -777,9 +859,9 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
         ta.select();
         var ok = document.execCommand("copy");
         document.body.removeChild(ta);
-        if (ok) done(); else flashCopyStatus("コピー失敗");
+        if (ok) done(); else flashCopyStatus(S.copyFailed);
       } catch (_) {
-        flashCopyStatus("コピー失敗");
+        flashCopyStatus(S.copyFailed);
       }
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1037,7 +1119,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
       item.media = null;
       var ph = document.createElement("div");
       ph.className = "item-ph";
-      ph.textContent = isVideo ? "再生不可: " + basename(path) : "load failed: " + path;
+      ph.textContent = isVideo ? S.cannotPlay(basename(path)) : S.loadFailed(path);
       item.ph = ph;
       el.insertBefore(ph, label);
       onSettled();
@@ -1060,7 +1142,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
     playBtn.type = "button";
     playBtn.className = "audio-playpause";
     playBtn.textContent = "▶";
-    playBtn.title = "再生 / 一時停止";
+    playBtn.title = S.playPause;
 
     var seek = document.createElement("input");
     seek.type = "range";
@@ -1069,7 +1151,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
     seek.max = "1000";
     seek.value = "0";
     seek.disabled = true; // duration が分かるまでは動かせない
-    seek.title = "シーク";
+    seek.title = S.seek;
 
     var timeEl = document.createElement("span");
     timeEl.className = "audio-time";
@@ -1146,7 +1228,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
       item.audioBox = null;
       var ph = document.createElement("div");
       ph.className = "item-ph";
-      ph.textContent = "再生不可: " + basename(path);
+      ph.textContent = S.cannotPlay(basename(path));
       item.ph = ph;
       el.insertBefore(ph, label);
       onSettled();
@@ -1230,7 +1312,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
 
     // 画像・動画・音声が混在しても種別を問わない表記にする(「15 images」のまま音声を含むと
     // 誤解を招くため)。CLI 側の opened 行(images=<n>)とは独立の表示なので、そちらは変えない
-    imageCountEl.textContent = totalItems + (totalItems === 1 ? " item" : " items");
+    imageCountEl.textContent = S.itemCount(totalItems);
 
     var pending = totalItems;
     function settled() {
@@ -1343,7 +1425,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
     lightboxSoundToggleBtn.style.display = "flex";
     lightboxSoundToggleBtn.classList.toggle("muted", !lightboxState.soundOn);
     var icon = lightboxState.soundOn ? "🔊" : "🔇";
-    var label = lightboxState.soundOn ? "音あり" : "ミュート中";
+    var label = lightboxState.soundOn ? S.soundOn : S.muted;
     lightboxSoundToggleBtn.textContent = "";
     var iconEl = document.createElement("span");
     iconEl.className = "lightbox-sound-icon";
@@ -1390,7 +1472,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
       };
       lightboxVideo.onerror = function () {
         lightboxVideo.style.display = "none";
-        lightboxErrorEl.textContent = "再生不可: " + basename(path);
+        lightboxErrorEl.textContent = S.cannotPlay(basename(path));
         lightboxErrorEl.style.display = "block";
       };
       lightboxVideo.src = toImgSrc(path);
@@ -1422,7 +1504,7 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
       };
       lightboxImg.onerror = function () {
         lightboxImg.style.display = "none";
-        lightboxErrorEl.textContent = "load failed: " + path;
+        lightboxErrorEl.textContent = S.loadFailed(path);
         lightboxErrorEl.style.display = "block";
       };
       lightboxImg.src = toImgSrc(path);
@@ -1590,7 +1672,39 @@ moodboard [--target &lt;名前&gt;] --json &lt;board.json&gt;
   }
 
   // ---------------- init ----------------
+  function applyLanguage() {
+    document.documentElement.lang = LANG;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (el) {
+      el.textContent = S[el.getAttribute("data-i18n")];
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-title]"), function (el) {
+      el.title = S[el.getAttribute("data-i18n-title")];
+    });
+    // ヒントは「キー=説明」ごとに折り返さない単位にする(日本語は語の途中でも折り返せるため、
+    // 1 本の文字列だと「s=選」「択」のように割れる)。"|" で区切ったまとまり(キャンバスの操作 /
+    // lightbox の操作)は 1 つの箱にし、1 行に収まらないときはまとまりごと次の行へ送る
+    Array.prototype.forEach.call(document.querySelectorAll("[data-hint]"), function (el) {
+      el.textContent = "";
+      var group = null;
+      S[el.getAttribute("data-hint")].forEach(function (token) {
+        if (token === "|" || group === null) {
+          group = document.createElement("span");
+          group.className = "hint-group";
+          el.appendChild(group);
+          if (token === "|") return;
+        }
+        var part = document.createElement("span");
+        part.className = "hint-item";
+        part.textContent = token;
+        group.appendChild(part);
+      });
+    });
+    bgToggleBtn.textContent = S.background(BG_STATES[bgIndex]);
+    updateCopyButton();
+  }
+
   function init() {
+    applyLanguage();
     setBaseSize(parseInt(gridSizeSlider.value, 10));
     startReplacePolling();
 

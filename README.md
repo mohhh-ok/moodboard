@@ -59,11 +59,11 @@ When you resize the window, the cards are re-laid out automatically. Once you ha
 - Videos play muted and on loop on the table. Open one full-size to hear it; sound is on by default there and `m` toggles it
 - An audio card has a play button, a seek bar and the time. Click anywhere on the card to play or pause. The card that is playing turns green
 - Only one thing makes sound at a time: starting an audio card pauses the others, and opening a video full-size pauses any audio card that is playing
-- A file that can't be played shows "再生不可" (can't play) with its file name. Some VP9 `.webm` files with transparency don't play; HEVC `.mov` with transparency does
+- A file that can't be played shows "Can't play" with its file name. Some VP9 `.webm` files with transparency don't play; HEVC `.mov` with transparency does
 
 #### Copy file paths
 
-Press `s` to enter selection mode. Each card gets a checkbox, and clicking a card toggles it. The "コピー" (Copy) button, or `⌘C`, copies the absolute paths of the selected files to the clipboard, one per line. `⌘A` selects all and `Esc` leaves selection mode. Paste them into the conversation to tell the agent which files you picked.
+Press `s` to enter selection mode. Each card gets a checkbox, and clicking a card toggles it. The "Copy" button, or `⌘C`, copies the absolute paths of the selected files to the clipboard, one per line. `⌘A` selects all and `Esc` leaves selection mode. Paste them into the conversation to tell the agent which files you picked.
 
 ## Commands (what the agent runs)
 
@@ -127,6 +127,17 @@ The window shows each section as a block from top to bottom: heading, note, then
 - `items` (required, non-empty): `path` (required) is absolute, or relative to the JSON file's directory. `label` (optional) is shown under the card; the file name is shown when it is omitted
 - Unknown keys, wrong types, empty `sections` / `items` and missing files are rejected with exit code 1, before any window opens
 - `--json` cannot be combined with a list of paths. `moodboard <paths...>` is the same as one section with no heading and no labels
+
+### Language
+
+The window and the error messages are shown in Japanese or English. moodboard follows the first language in macOS System Settings (`defaults read -g AppleLanguages`, not `$LANG`): Japanese if it is Japanese, English otherwise.
+To choose one yourself, put `--lang ja` or `--lang en` before the other arguments, or set `MOODBOARD_LANG=ja|en`. `--lang` wins over `MOODBOARD_LANG`.
+
+```sh
+moodboard --lang en --target logo v1.png v2.png
+```
+
+The `opened ...` line on success is for scripts and stays the same in every language.
 
 ### Exit codes
 

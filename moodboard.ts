@@ -7,6 +7,7 @@
 //   moodboard [--target <名前>] --json <board.json>       セクション分割・ラベル付きの board を開く
 //   moodboard --close <名前>                     その名前のウィンドウだけ閉じる
 //   moodboard --list                             開いている名前付きウィンドウを出す
+// どの形も先頭に --lang ja|en を置ける(表示言語。下の「表示言語」節)
 //
 // パス列挙は「見出しなし・ラベルなしの 1 セクション」の board に変換され、--json と同じ経路(下記)で渡る。
 // board(見出し・説明・パス・ラベル)は URL クエリに載せない。/tmp/moodboard-<uid>/boards/<rid>.json に
@@ -29,7 +30,7 @@ import { randomUUID } from "node:crypto";
 
 // TMPDIR はエージェントの実行環境ごとに違うことがあるため、同じユーザーの全プロセスで共有できる
 // 固定の場所に置く。/tmp は他ユーザーも書けるので、uid 付きの 0700 ディレクトリにして持ち主を確かめる
-if (process.getuid === undefined) throw new Error("moodboard は POSIX 環境だけに対応しています");
+if (process.getuid === undefined) throw new Error("moodboard supports POSIX environments only");
 const USER_ID = process.getuid();
 const STATE_DIR = `/tmp/moodboard-${USER_ID}`;
 const TARGETS_DIR = join(STATE_DIR, "targets");
@@ -72,15 +73,97 @@ type Board = { sections: BoardSection[] };
 const SECTION_KEYS = new Set(["title", "note", "items"]);
 const ITEM_KEYS = new Set(["path", "label"]);
 
+// ---------------- 表示言語 ----------------
+// 決め方の正は README.md の「Language」節: --lang > MOODBOARD_LANG > macOS の言語設定。ja 以外は en。
+// $LANG は見ない(エージェントやターミナルは macOS が日本語でも en_US.UTF-8 にしていることが多い)。
+// 窓(moodboard.html)には URL の lang で同じ言語を渡す。成功時の `opened ...` 行はスクリプト向けなので訳さない
+type Lang = "ja" | "en";
+const MESSAGES = {
+  ja: {
+    usage: "usage: moodboard [--lang ja|en] [--target <名前>] <画像/動画/音声パス...>\n       moodboard [--lang ja|en] [--target <名前>] --json <board.json>\n       moodboard [--lang ja|en] --close <名前>\n       moodboard [--lang ja|en] --list",
+    badLang: (source: string, value: string) => `${source} は ja か en で指定してください: ${value}`,
+    badTargetName: "名前は英数字と . _ - だけで指定してください",
+    jsonTakesOnePath: "--json は board JSON ファイルのパスを1つだけ取ります",
+    jsonWithPaths: "--json とパス列挙は併用できません",
+    noPaths: "画像/動画/音声パスがありません",
+    jsonNotFound: (path: string) => `--json のファイルが見つかりません: ${path}`,
+    jsonInvalid: (detail: string) => `--json の内容が不正な JSON です: ${detail}`,
+    unknownKeys: (where: string, keys: string) => `${where} に未知のキーがあります: ${keys}`,
+    nonEmptyArray: (where: string) => `${where} は空でない配列である必要があります`,
+    nonEmptyString: (where: string) => `${where} は空でない string である必要があります`,
+    mustBeObject: (where: string) => `${where} はオブジェクトである必要があります`,
+    mustBeString: (where: string) => `${where} は string である必要があります`,
+    missingPaths: "存在しないパス:",
+    lockFailed: (target: string, path: string) => `target=${target} のロックを取れませんでした (${path})`,
+    notShown: (target: string | null, replaced: boolean) =>
+      `表示を確認できませんでした (target=${target ?? "(名前なし)"}, ${replaced ? "差し替え" : "新規"})`,
+    failedItems: "読み込めなかったアイテム:",
+    notOpen: (target: string) => `target=${target} のウィンドウは開いていません`,
+    badStateDir: (dir: string) => `${dir} が自分の所有する権限 700 のディレクトリではありません。中身を確かめて削除してください`,
+  },
+  en: {
+    usage: "usage: moodboard [--lang ja|en] [--target <name>] <image/video/audio paths...>\n       moodboard [--lang ja|en] [--target <name>] --json <board.json>\n       moodboard [--lang ja|en] --close <name>\n       moodboard [--lang ja|en] --list",
+    badLang: (source: string, value: string) => `${source} must be ja or en: ${value}`,
+    badTargetName: "Names may use only letters, digits and . _ -",
+    jsonTakesOnePath: "--json takes exactly one board JSON file path",
+    jsonWithPaths: "--json cannot be combined with a list of paths",
+    noPaths: "No image/video/audio paths given",
+    jsonNotFound: (path: string) => `--json file not found: ${path}`,
+    jsonInvalid: (detail: string) => `--json file is not valid JSON: ${detail}`,
+    unknownKeys: (where: string, keys: string) => `${where} has unknown keys: ${keys}`,
+    nonEmptyArray: (where: string) => `${where} must be a non-empty array`,
+    nonEmptyString: (where: string) => `${where} must be a non-empty string`,
+    mustBeObject: (where: string) => `${where} must be an object`,
+    mustBeString: (where: string) => `${where} must be a string`,
+    missingPaths: "Paths that do not exist:",
+    lockFailed: (target: string, path: string) => `Could not take the lock for target=${target} (${path})`,
+    notShown: (target: string | null, replaced: boolean) =>
+      `Could not confirm that the window showed the files (target=${target ?? "(unnamed)"}, ${replaced ? "replaced" : "new window"})`,
+    failedItems: "Items that failed to load:",
+    notOpen: (target: string) => `No window is open for target=${target}`,
+    badStateDir: (dir: string) => `${dir} is not a directory owned by you with mode 700. Check its contents and delete it`,
+  },
+} satisfies Record<Lang, unknown>;
+
+let lang: Lang = "en";
+let M = MESSAGES[lang];
+
+function setLang(next: Lang) {
+  lang = next;
+  M = MESSAGES[next];
+}
+
+function parseLang(value: string | undefined, source: string): Lang {
+  if (value === "ja" || value === "en") return value;
+  usageError(M.badLang(source, value ?? ""));
+}
+
+// `defaults read -g AppleLanguages` の出力は `(\n    "ja-JP",\n    en\n)` の形。先頭が優先言語
+function systemLang(): Lang {
+  const result = spawnSync("defaults", ["read", "-g", "AppleLanguages"], { encoding: "utf8" });
+  const first = result.status === 0 ? /\(\s*"?([^",\s)]+)/.exec(result.stdout)?.[1] : undefined;
+  return first?.toLowerCase().startsWith("ja") ? "ja" : "en";
+}
+
 await main(process.argv.slice(2));
 
 async function main(argv: string[]) {
-  ensureStateDir();
-
   if (argv[0] === "--window") {
+    ensureStateDir();
     runWindow(JSON.parse(argv[1]) as WindowConfig);
     return;
   }
+
+  // --lang があれば MOODBOARD_LANG は見ない(不正な値が残っていても --lang で上書きできるように)
+  setLang(systemLang());
+  const envLang = process.env.MOODBOARD_LANG;
+  if (argv[0] === "--lang") {
+    setLang(parseLang(argv[1], "--lang"));
+    argv = argv.slice(2);
+  } else if (envLang !== undefined && envLang !== "") {
+    setLang(parseLang(envLang, "MOODBOARD_LANG"));
+  }
+  ensureStateDir();
   if (argv[0] === "--close") {
     process.exit(closeTarget(requireTargetName(argv[1])));
   }
@@ -106,11 +189,11 @@ async function main(argv: string[]) {
 
 function buildBoard(rest: string[]): Board {
   if (rest[0] === "--json") {
-    if (rest.length !== 2) usageError("--json は board JSON ファイルのパスを1つだけ取ります");
+    if (rest.length !== 2) usageError(M.jsonTakesOnePath);
     return readBoardJson(rest[1]);
   }
-  if (rest.includes("--json")) usageError("--json とパス列挙は併用できません");
-  if (rest.length === 0) usageError("画像/動画/音声パスがありません");
+  if (rest.includes("--json")) usageError(M.jsonWithPaths);
+  if (rest.length === 0) usageError(M.noPaths);
   return boardFromPaths(rest);
 }
 
@@ -121,12 +204,12 @@ function boardFromPaths(paths: string[]): Board {
 
 function readBoardJson(jsonPath: string): Board {
   const absJsonPath = resolve(jsonPath);
-  if (!existsSync(absJsonPath)) fatal(`--json のファイルが見つかりません: ${jsonPath}`);
+  if (!existsSync(absJsonPath)) fatal(M.jsonNotFound(jsonPath));
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(absJsonPath, "utf8"));
   } catch (error) {
-    fatal(`--json の内容が不正な JSON です: ${(error as Error).message}`);
+    fatal(M.jsonInvalid((error as Error).message));
   }
   return validateBoard(raw, dirname(absJsonPath));
 }
@@ -136,9 +219,9 @@ function readBoardJson(jsonPath: string): Board {
 function validateBoard(raw: unknown, baseDir: string): Board {
   const obj = asRecord(raw, "board JSON");
   const unknown = Object.keys(obj).filter((k) => k !== "sections");
-  if (unknown.length > 0) fatal(`board JSON に未知のキーがあります: ${unknown.join(", ")}`);
+  if (unknown.length > 0) fatal(M.unknownKeys("board JSON", unknown.join(", ")));
   if (!Array.isArray(obj.sections) || obj.sections.length === 0) {
-    fatal("board JSON の sections は空でない配列である必要があります");
+    fatal(M.nonEmptyArray("board JSON sections"));
   }
   const sections = obj.sections.map((s, i) => validateSection(s, i, baseDir));
   return { sections };
@@ -148,11 +231,11 @@ function validateSection(raw: unknown, index: number, baseDir: string): BoardSec
   const prefix = `sections[${index}]`;
   const obj = asRecord(raw, prefix);
   const unknown = Object.keys(obj).filter((k) => !SECTION_KEYS.has(k));
-  if (unknown.length > 0) fatal(`${prefix} に未知のキーがあります: ${unknown.join(", ")}`);
+  if (unknown.length > 0) fatal(M.unknownKeys(prefix, unknown.join(", ")));
   const title = optionalString(obj, "title", `${prefix}.title`);
   const note = optionalString(obj, "note", `${prefix}.note`);
   if (!Array.isArray(obj.items) || obj.items.length === 0) {
-    fatal(`${prefix}.items は空でない配列である必要があります`);
+    fatal(M.nonEmptyArray(`${prefix}.items`));
   }
   const items = obj.items.map((it, j) => validateItem(it, index, j, baseDir));
   return { title, note, items };
@@ -162,29 +245,29 @@ function validateItem(raw: unknown, sectionIndex: number, itemIndex: number, bas
   const prefix = `sections[${sectionIndex}].items[${itemIndex}]`;
   const obj = asRecord(raw, prefix);
   const unknown = Object.keys(obj).filter((k) => !ITEM_KEYS.has(k));
-  if (unknown.length > 0) fatal(`${prefix} に未知のキーがあります: ${unknown.join(", ")}`);
+  if (unknown.length > 0) fatal(M.unknownKeys(prefix, unknown.join(", ")));
   if (typeof obj.path !== "string" || obj.path.length === 0) {
-    fatal(`${prefix}.path は空でない string である必要があります`);
+    fatal(M.nonEmptyString(`${prefix}.path`));
   }
   const label = optionalString(obj, "label", `${prefix}.label`);
   return { path: resolve(baseDir, obj.path), label };
 }
 
 function asRecord(raw: unknown, label: string): Record<string, unknown> {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fatal(`${label} はオブジェクトである必要があります`);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fatal(M.mustBeObject(label));
   return raw as Record<string, unknown>;
 }
 
 function optionalString(obj: Record<string, unknown>, key: string, label: string): string | undefined {
   if (!(key in obj)) return undefined;
-  if (typeof obj[key] !== "string") fatal(`${label} は string である必要があります`);
+  if (typeof obj[key] !== "string") fatal(M.mustBeString(label));
   return obj[key] as string;
 }
 
 // 型・構造の検証を通った board に対して、パスの実在だけを確かめる(JSON・パス列挙の両方で共通)
 function checkedBoard(board: Board): Board {
   const missing = board.sections.flatMap((s) => s.items.map((it) => it.path)).filter((p) => !existsSync(p));
-  if (missing.length > 0) fatal("存在しないパス:\n" + missing.join("\n"));
+  if (missing.length > 0) fatal(M.missingPaths + "\n" + missing.join("\n"));
   return board;
 }
 
@@ -202,7 +285,7 @@ async function openBoard(request: { target: string | null; board: Board }): Prom
   const target = request.target;
   const lock = await acquireTargetLock(target);
   if (!lock) {
-    console.error(`target=${target} のロックを取れませんでした (${lockPath(target)})`);
+    console.error(M.lockFailed(target, lockPath(target)));
     return 2;
   }
   try {
@@ -256,12 +339,12 @@ async function showBoard(request: { target: string | null; board: Board }): Prom
     } else {
       rmSync(boardPath(requestId), { force: true });
     }
-    console.error(`表示を確認できませんでした (target=${label}, ${action})` + (logPath ? `\nlog: ${logPath}` : ""));
+    console.error(M.notShown(request.target, existingPid !== null) + (logPath ? `\nlog: ${logPath}` : ""));
     return 2;
   }
   console.log(`opened target=${label} pid=${ack.pid} ${action} images=${itemCount}`);
   if (ack.failedPaths.length > 0) {
-    console.error("読み込めなかったアイテム:\n" + ack.failedPaths.join("\n"));
+    console.error(M.failedItems + "\n" + ack.failedPaths.join("\n"));
     return 3;
   }
   return 0;
@@ -325,7 +408,7 @@ function runWindow(config: WindowConfig) {
 function closeTarget(target: string): number {
   const pid = findWindowPid(target);
   if (pid === null) {
-    console.error(`target=${target} のウィンドウは開いていません`);
+    console.error(M.notOpen(target));
     return 1;
   }
   try {
@@ -371,7 +454,7 @@ function ensureStateDir() {
   const stat = lstatSync(STATE_DIR);
   const isOwnPrivateDir = stat.isDirectory() && stat.uid === USER_ID && (stat.mode & 0o077) === 0;
   if (!isOwnPrivateDir) {
-    console.error(`${STATE_DIR} が自分の所有する権限 700 のディレクトリではありません。中身を確かめて削除してください`);
+    console.error(M.badStateDir(STATE_DIR));
     process.exit(1);
   }
   for (const dir of [TARGETS_DIR, ACKS_DIR, LOGS_DIR, BOARDS_DIR]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -420,22 +503,21 @@ function readPid(target: string): number | null {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
-// board(見出し・説明・パス・ラベル)は載せない。ページはこの rid を渡して __moodboardLoad(rid) を呼ぶ
+// board(見出し・説明・パス・ラベル)は載せない。ページはこの rid を渡して __moodboardLoad(rid) を呼ぶ。
+// lang は表示言語(ページが文字列表を選ぶ)
 function buildUrl(requestId: string): string {
-  return "file://" + htmlPath.split("/").map(encodeURIComponent).join("/") + "?rid=" + requestId;
+  return "file://" + htmlPath.split("/").map(encodeURIComponent).join("/") + "?rid=" + requestId + "&lang=" + lang;
 }
 
 function requireTargetName(name: string | undefined): string {
   if (name === undefined || !TARGET_NAME_PATTERN.test(name)) {
-    usageError("名前は英数字と . _ - だけで指定してください");
+    usageError(M.badTargetName);
   }
   return name;
 }
 
 function usageError(message: string): never {
-  fatal(
-    `${message}\nusage: moodboard [--target <名前>] <画像/動画/音声パス...>\n       moodboard [--target <名前>] --json <board.json>\n       moodboard --close <名前>\n       moodboard --list`,
-  );
+  fatal(`${message}\n${M.usage}`);
 }
 
 function fatal(message: string): never {
