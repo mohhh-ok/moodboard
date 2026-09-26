@@ -1,7 +1,7 @@
 {
   "name": "moodboard",
   "version": "1.0.0",
-  "description": "複数画像をライトテーブルに並べて見比べる WKWebView ビューア(bun + webview-bun)",
+  "description": "A macOS window for checking what your AI generated. Your coding agent opens its images, videos and audio side by side; you compare them and pick.",
   "type": "module",
   "bin": {
     "moodboard": "./moodboard.ts"

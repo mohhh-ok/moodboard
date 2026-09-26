@@ -90,4 +90,4 @@ moodboard --list           # 開いている名前付きウィンドウ
 ## 備考
 
 - 窓を閉じればプロセスも終わる。状態ファイルは `/tmp/moodboard-<uid>/`(権限 700。他ユーザーは触れない)(targets に名前ごとの pid、logs に新規起動のログ、boards に board JSON。boards は読まれ次第すぐ消えるので基本空)
-- ビューア本体の変更・検証手順は [README](https://github.com/mohhh-ok/moodboard)
+- ビューア本体の変更・検証手順は [docs/development.md](https://github.com/mohhh-ok/moodboard/blob/main/docs/development.md)

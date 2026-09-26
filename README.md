@@ -1,41 +1,107 @@
 # moodboard
 
-A single-command viewer that lays out multiple images (PNG / WebP / animated GIF), videos (mov / webm / mp4) or audio files (wav / mp3 / m4a / aac / flac / ogg / opus) — matched by extension — on a light table so you can compare them side by side. Items can be grouped into sections (a heading plus a note) and each card can carry a label.
-Runs in a WKWebView window via bun + [webview-bun](https://github.com/tr1ckydev/webview-bun). No server, no browser.
+A window for checking what your AI generated.
 
-Built primarily for coding agents (Claude Code etc.) to show generated images or comparison candidates to the user.
-The whole thing is `moodboard.html` (self-contained HTML/CSS/JS, zero external dependencies) plus `moodboard.ts` (the webview-bun launcher).
-
-
+When your coding agent (Claude Code etc.) generates images, videos or audio, it opens them in moodboard, laid out side by side like prints on a light table. You look them over, compare the candidates, and tell the agent which one to keep. You don't open the files one by one, and the agent doesn't need to describe them in text.
 
 https://github.com/user-attachments/assets/11d5acf0-a678-4173-bbcd-b4a53262e03f
 
+What you can check:
 
+- **Images**: PNG / WebP / animated GIF. Zoom in to the pixel, overlap two candidates, check transparency on a checkerboard
+- **Videos**: mov / webm / mp4. They loop silently side by side; open one to watch it with sound
+- **Audio**: wav / mp3 / m4a / aac / flac / ogg / opus. Each file is a player card, so you can listen to takes one after another
 
-## Install
+The agent can add a heading and a short label to each card ("current", "retake 2" …), so you know what you are comparing.
+
+## Requirements
+
+- macOS (tested on macOS only)
+- [bun](https://bun.sh)
+
+## Setup
+
+Install the command, then give your agent the skill that tells it how to use moodboard:
 
 ```sh
 bun install -g github:mohhh-ok/moodboard
+npx skills add mohhh-ok/moodboard
 ```
 
-This puts a `moodboard` command on your PATH.
+The skill follows the [Agent Skills](https://github.com/anthropics/skills) format.
 
-## Usage
+After that, ask your agent to "show me in moodboard" or "put them side by side", and a window opens with the files. The agent reuses the same window for the same task, so new results replace the old ones instead of piling up windows.
+
+## Checking the results
+
+When you find the one you want, tell the agent — or select cards and copy their paths ([Copy file paths](#copy-file-paths)) to paste back into the conversation.
+
+### Controls
+
+| Action | What happens |
+| --- | --- |
+| wheel / pinch | Resize the card under the cursor (up = bigger, like Google Maps) |
+| drag | Move a card freely. Cards can overlap, and the one you grab comes to the front |
+| click | Open the card full-size (images and videos) |
+| `r` | Put every card back in its original layout |
+| `b` | Switch background: dark → checkerboard → white (use checkerboard to check transparency) |
+| slider, `+` / `-` | Change the base size of all cards |
+| `s` | Selection mode (see below) |
+
+In the full-size view: `0` = fit to window, `1` = actual pixels, `2` = 200%, `←` / `→` = previous / next, `m` = sound on/off, `Esc` = close.
+
+At 200% of the actual pixels or more (on the table or full-size), pixels are shown sharp, without smoothing.
+
+When you resize the window, the cards are re-laid out automatically. Once you have moved or resized a card yourself, this stops so your placement is kept; press `r` to lay everything out again.
+
+#### Videos and audio
+
+- Videos play muted and on loop on the table. Open one full-size to hear it; sound is on by default there and `m` toggles it
+- An audio card has a play button, a seek bar and the time. Click anywhere on the card to play or pause. The card that is playing turns green
+- Only one thing makes sound at a time: starting an audio card pauses the others, and opening a video full-size pauses any audio card that is playing
+- A file that can't be played shows "再生不可" (can't play) with its file name. Some VP9 `.webm` files with transparency don't play; HEVC `.mov` with transparency does
+
+#### Copy file paths
+
+Press `s` to enter selection mode. Each card gets a checkbox, and clicking a card toggles it. The "コピー" (Copy) button, or `⌘C`, copies the absolute paths of the selected files to the clipboard, one per line. `⌘A` selects all and `Esc` leaves selection mode. Paste them into the conversation to tell the agent which files you picked.
+
+## Commands (what the agent runs)
+
+You normally don't type these yourself; the skill teaches them to the agent. You can still run them from a terminal.
 
 ```sh
-moodboard [--target <name>] <paths...>
-moodboard [--target <name>] --json <board.json>
-moodboard --close <name>
-moodboard --list
+moodboard a.png b.png c.webp
 ```
 
-- `--target` works like `target="xxx"` in HTML: if a window with that name is open, its contents are replaced (the window keeps its position); otherwise a new window opens under that name. The name is also the window title. Names may contain letters, digits and `. _ -`
-- Without `--target`, every call opens a new window
-- `--close <name>` closes only that window. `--list` prints the open named windows
-- Paths may be relative or absolute. Spaces and non-ASCII characters are fine
-- `--json <board.json>` takes a JSON file that groups items into sections and labels each card (format below). Write the file somewhere like `/tmp/<project>/` and pass its path. Passing both `--json` and paths is an error
+A window opens with the three images side by side. Paths can be relative or absolute, and may contain spaces or non-ASCII characters.
 
-### Board JSON
+### Reuse one window
+
+```sh
+moodboard --target logo v1.png v2.png
+# replaces the contents of the "logo" window
+moodboard --target logo v3.png v4.png
+```
+
+If a window with that name is already open, its contents are replaced and the window stays where it is. If not, a new window opens under that name. The name also becomes the window title. Names may use letters, digits and `. _ -`.
+Without `--target`, every call opens a new window.
+
+```sh
+# show the open named windows
+moodboard --list
+# close only the "logo" window
+moodboard --close logo
+```
+
+When several projects or agents share one machine, give each one its own name (the project directory name, for example). Close windows with `--close <name>`. Don't use `pkill`, because it closes every project's windows.
+
+### Headings and labels
+
+To group files under headings, or to put a short label on each card, write a board JSON file and pass it with `--json`:
+
+```sh
+moodboard --target voice --json board.json
+```
 
 ```json
 {
@@ -52,71 +118,30 @@ moodboard --list
 }
 ```
 
-- `sections` (required, non-empty) — each section is laid out as one block: heading, note, then its cards
-- `title`, `note` (optional) — the heading and the text under it
-- `items` (required, non-empty) — `path` (required) is absolute or relative to the JSON file's directory; `label` (optional) is shown on the card, the file name is shown when omitted
-- Unknown keys, wrong types, empty `sections`/`items` arrays and missing files are rejected with exit code 1 before any window opens
-- Plain `moodboard <paths...>` is the same as one untitled section without labels
+The window shows each section as a block from top to bottom: heading, note, then its cards.
 
-The launcher opens the window in a detached child process (its own session), waits until the page reports that every image has settled, then exits. Run it in the foreground; no `nohup` / `&` / `disown` is needed, and the window survives the end of an agent's tool call. The exit code tells whether the window is really showing the images:
+### Board JSON
+
+- `sections` (required, non-empty): the list of blocks
+- `title`, `note` (optional): the heading and the text under it
+- `items` (required, non-empty): `path` (required) is absolute, or relative to the JSON file's directory. `label` (optional) is shown under the card; the file name is shown when it is omitted
+- Unknown keys, wrong types, empty `sections` / `items` and missing files are rejected with exit code 1, before any window opens
+- `--json` cannot be combined with a list of paths. `moodboard <paths...>` is the same as one section with no heading and no labels
+
+### Exit codes
+
+`moodboard` waits until the window has actually loaded the files, then exits. You can run it in the foreground; the window stays open after the command ends. Agents and scripts can check the exit code to know whether the files are really on screen:
 
 | code | meaning |
 | --- | --- |
-| 0 | shown; prints `opened target=<name> pid=<pid> 新規\|差し替え images=<n>` |
-| 1 | bad arguments, an invalid board JSON, or a missing path |
-| 2 | not confirmed within 20 s (for a new window, the log path is printed) |
-| 3 | shown, but some images failed to load (listed) |
+| 0 | Shown. Prints `opened target=<name> pid=<pid> 新規\|差し替え images=<n>` (新規 = new window, 差し替え = replaced) |
+| 1 | Bad arguments, an invalid board JSON, or a missing file |
+| 2 | Could not confirm the window within 20 s (for a new window, the log path is printed) |
+| 3 | Shown, but some files failed to load (they are listed) |
 
-When several agents share one machine, give each project its own name (e.g. the project directory name). Never close windows with `pkill`; that also closes other projects' windows.
+## Development
 
-State lives in `/tmp/moodboard-<uid>/` (mode 0700, owner checked on every run) (`targets/<name>.pid`, pending replace requests, acks, and logs of new windows).
-
-## UI
-
-- **wheel** = resize the image itself, keeping the point under the cursor fixed (up = zoom in, same direction as Google Maps; pinch supported)
-- **drag** = free movement (no clipping; images may overlap for comparison; the grabbed image comes to the front)
-- **click** (a plain click without dragging) = lightbox
-  - inside the lightbox: `0` = fit, `1` = physical 1:1, `2` = 200%, `←/→` = previous/next, `m` = toggle sound, `Esc` = close
-- `r` = re-align / `b` = cycle background (dark → checkerboard → white; use checkerboard to check transparency) / slider, `+`/`-` = base size. Resizing the window also re-aligns automatically (debounced), but only as long as no card has been manually dragged or wheel-resized since the last alignment — once you touch a card, auto re-align is skipped so it won't undo your placement, and only `r` re-aligns everything again
-- `s` = toggle selection mode. In selection mode a checkbox appears on each item and a click toggles it; the "コピー" button copies the **absolute paths of the selected items, newline-separated**, to the clipboard. `⌘/Ctrl+A` = select all, `⌘/Ctrl+C` = copy, `Esc` = leave selection mode. Useful for pulling paths out of what you laid out and piping them into another command
-- At 200% physical scale or larger, `image-rendering: pixelated` is applied automatically (for pixel-level inspection)
-- Each card shows its label (or the file name) under the media. Sections are stacked top to bottom, each with its heading and note; `r` restores this layout
-- Audio (wav/mp3/m4a/aac/flac/ogg/opus) is a player card on the light table: a play/pause button, a seek bar and elapsed/total time. Clicking the card (or the button) plays it in place; starting one pauses any other audio, so only one plays at a time. The card's height is fixed to fit the controls — base size and wheel only change its width, so it never turns into a tall empty box. A playing card gets a green border, a green tint on the card background and a green play button, so you can tell which one is playing even while it's also selected (the blue selection outline alone would otherwise cover the green border and make the card look plain blue). Audio cards can be dragged and resized like the others, but do not open the lightbox, and `←/→` in the lightbox skips them. Wheel-resizing an audio card keeps it from drifting to a negative x position (image/video wheel behaviour is unchanged) — near the left edge, the card's left side is clamped to the canvas edge instead of following the cursor past it, because past x=0 the card would land off the left of the page with no way to scroll back to it, taking the play button and label with it. In selection mode, clicking anywhere on the card — including the play button and seek bar — toggles selection instead of playing/seeking. A file that cannot be played shows "再生不可" plus the filename
-- Videos (mov/webm/mp4) play autoplay/muted/looped in place and support the same wheel/drag/lightbox controls as images. The light table is always muted (several videos playing sound at once is noise); sound plays one video at a time in the lightbox, on by default, `m` toggles mute. Opening a video in the lightbox (or unmuting it there) pauses any light-table audio card that's currently playing, so only one thing makes sound at a time. HEVC alpha `.mov` plays in WKWebView; VP9 alpha `.webm` may not — a failed item shows "再生不可" plus the filename instead of crashing
-
-## Never do this
-
-- **Do not open it with `open "file://...?query"`**. macOS LaunchServices drops the query string and you get an empty page
-- **Do not open it with the Playwright MCP** (the `file:` protocol is blocked, and launching the Chrome channel can collide with the user's own Chrome). For verification, use the method under "Verifying changes to the viewer"
-- Do not `rm` the images you displayed
-
-## Verifying changes to the viewer
-
-Synthetic `dispatchEvent` calls do not reproduce native behaviour (ghost image drag etc.) and let implementation bugs slip through.
-Verify with **real mouse input**: playwright-core + headless Chromium (point `executablePath` at `~/Library/Caches/ms-playwright/chromium-*`) using `page.mouse.down/move/up` and `page.mouse.wheel`.
-
-Playwright cannot open `file:` URLs, so for verification only, serve the filesystem root on localhost with something like `bun -e 'Bun.serve(...)'` and open `moodboard.html?rid=<id>` over `http://` (`toImgSrc` in `moodboard.html` turns absolute paths into server-root paths, so the server must serve `/`).
-The page gets its board from the host, so provide the bound functions yourself with `page.exposeFunction`: `__moodboardLoad(rid)` returns the board object, `__moodboardReady(rid, failedPaths)` receives the ack, and `__moodboardPoll()` returns `null`.
-Stop the server afterwards with `lsof -ti:<port> | xargs kill`.
-
-## Use as an Agent Skill
-
-This repository ships an [Agent Skills](https://github.com/anthropics/skills) skill at `skills/moodboard/SKILL.md`. Install it with:
-
-```sh
-npx skills add mohhh-ok/moodboard
-```
-
-Then, when you want your coding agent to show you images, saying "open it in moodboard" triggers the launch command above.
-
-## Implementation notes
-
-- `moodboard.ts` turns the arguments (a path list or a validated `--json` file) into one board object with absolute paths, writes it to `/tmp/moodboard-<uid>/boards/<rid>.json`, and hands `moodboard.html?rid=<request id>` to webview-bun in a detached child (`moodboard.ts --window <config>`). The page reads the board through the bound `__moodboardLoad(rid)`. Nothing but the request id goes into the URL, so long notes and many paths never hit a URL length limit
-- The page reports readiness through the bound `__moodboardReady(rid, failedPaths)`; the child writes it to `/tmp/moodboard-<uid>/acks/<rid>.json`, which the launcher waits for
-- Board files under `boards/` don't accumulate: `__moodboardLoad` deletes its file right after reading it. On a failed/unconfirmed open (timeout waiting for the ack), the launcher only deletes the request/board files when the window hasn't picked up the request yet (checked via the target's request file still existing); if the window has already picked it up and may be mid-load, the launcher leaves the board file alone so a late-but-successful load doesn't fail — the window's own `__moodboardLoad` cleans it up whenever it runs. The window process also deletes its own initial board file on exit as a last-resort sweep (later boards loaded via a target replace are already gone by then, each cleaned up by its own `__moodboardLoad` call). Anything left over after all of that (a window that truly crashed, etc.) is swept at the next launcher invocation if it's older than several times the ack timeout. If `__moodboardLoad` itself fails, the page shows a distinct "failed to load" state instead of the empty state, so a load failure is never silently indistinguishable from "no items"
-- Replacing a named window: the launcher writes `/tmp/moodboard-<uid>/targets/<name>.request.json`; the page polls the bound `__moodboardPoll()` every 500 ms and `location.replace`s to the new URL. Polling from the page is needed because Bun's event loop does not run while `webview.run()` owns the thread
-- webview-bun resolves its dylib/so through a package-relative import (`../build/libwebview.dylib` etc.), so it works under a global install as well (it reads from `node_modules/webview-bun/build/`)
-- Verified on macOS (WKWebView) only. webview-bun ships Linux/Windows binaries too, but those have not been tested
+Notes for changing the viewer itself (how to verify changes, how it works inside) are in [docs/development.md](docs/development.md).
 
 ## License
 
