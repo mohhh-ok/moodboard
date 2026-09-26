@@ -6,6 +6,12 @@ Runs in a WKWebView window via bun + [webview-bun](https://github.com/tr1ckydev/
 Built primarily for coding agents (Claude Code etc.) to show generated images or comparison candidates to the user.
 The whole thing is `moodboard.html` (self-contained HTML/CSS/JS, zero external dependencies) plus `moodboard.ts` (the webview-bun launcher).
 
+
+
+https://github.com/user-attachments/assets/11d5acf0-a678-4173-bbcd-b4a53262e03f
+
+
+
 ## Install
 
 ```sh
