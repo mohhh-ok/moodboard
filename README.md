@@ -1,5 +1,15 @@
 # moodboard
 
+> **Moved to [mohhh-ok/agent-boards](https://github.com/mohhh-ok/agent-boards).** moodboard now lives there together with textboard and reportboard; this repository is archived.
+>
+> ```sh
+> bun remove -g moodboard
+> bun install -g github:mohhh-ok/agent-boards
+> npx skills add mohhh-ok/agent-boards
+> ```
+>
+> The `moodboard` command, its arguments and its behavior are unchanged.
+
 A window for checking what your AI generated.
 
 When your coding agent (Claude Code etc.) generates images, videos or audio, it opens them in moodboard, laid out side by side like prints on a light table. You look them over, compare the candidates, and tell the agent which one to keep. You don't open the files one by one, and the agent doesn't need to describe them in text.
